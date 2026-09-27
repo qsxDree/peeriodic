@@ -1,0 +1,168 @@
+.share-modal-content {
+  max-width: 540px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.share-section {
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.section-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #495057;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.copy-input-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.share-url-input {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  background: #f8f9fa;
+  color: #495057;
+  outline: none;
+  font-family: monospace;
+}
+
+.invite-builder {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.role-select {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  background: white;
+  outline: none;
+}
+
+.generated-invite-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: #e7f5ff;
+  border: 1px solid #a5d8ff;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.invite-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #1971c2;
+  text-transform: uppercase;
+}
+
+.members-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.member-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid #f1f3f5;
+}
+
+.member-row:last-child {
+  border-bottom: none;
+}
+
+.member-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.member-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #212529;
+}
+
+.member-email {
+  font-size: 0.75rem;
+  color: #868e96;
+}
+
+.member-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.member-role-select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.member-remove-btn {
+  background: none;
+  border: none;
+  color: #fa5252;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.member-remove-btn:hover {
+  background: #ffe3e3;
+}
+
+.member-role-badge {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.role-owner {
+  background: #fff3bf;
+  color: #d9480f;
+}
+
+.role-editor {
+  background: #d3f9d8;
+  color: #2b8a3e;
+}
+
+.role-viewer {
+  background: #e9ecef;
+  color: #495057;
+}
+
+.members-empty, .members-loading {
+  font-size: 0.85rem;
+  color: #868e96;
+  padding: 0.75rem;
+  text-align: center;
+  border: 1px dashed #dee2e6;
+  border-radius: 8px;
+}

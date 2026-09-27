@@ -24,3 +24,8 @@ yarn-error.log*
 
 # local vsc
 .vscode
+*.nix
+
+# binaries
+backend/bin/
+bin/

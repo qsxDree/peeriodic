@@ -1,58 +1,85 @@
-import { WebSocketMessage } from '../types';
+import { CursorPosition, Operation, WebSocketMessage } from '../types';
+import apiService from './api';
+
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
 type MessageHandler = (message: WebSocketMessage) => void;
-type ConnectionHandler = () => void;
+type StatusHandler = (status: ConnectionStatus) => void;
 type ErrorHandler = (error: Event) => void;
+
+interface ConnectOptions {
+  name?: string;
+  uid?: string;
+}
 
 class WebSocketService {
   private socket: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectDelay = 1000;
+  private maxReconnectAttempts = 10;
+  private baseReconnectDelay = 1000;
   private messageHandlers: MessageHandler[] = [];
-  private connectionHandlers: ConnectionHandler[] = [];
+  private statusHandlers: StatusHandler[] = [];
   private errorHandlers: ErrorHandler[] = [];
   private currentRoomId: string | null = null;
-  private isConnecting = false;
+  private currentOptions: ConnectOptions | null = null;
+  private status: ConnectionStatus = 'disconnected';
+  private pingInterval: NodeJS.Timeout | null = null;
 
-  connect(roomId: string): Promise<void> {
+  getStatus(): ConnectionStatus {
+    return this.status;
+  }
+
+  private setStatus(newStatus: ConnectionStatus) {
+    this.status = newStatus;
+    this.statusHandlers.forEach(handler => handler(newStatus));
+  }
+
+  connect(roomId: string, options?: ConnectOptions): Promise<void> {
+    this.currentRoomId = roomId;
+    if (options) {
+      this.currentOptions = options;
+    }
+
     return new Promise((resolve, reject) => {
       try {
-        // Disconnect existing connection if any
         if (this.socket) {
           this.socket.close();
           this.socket = null;
         }
 
-        if (this.isConnecting) {
-          reject(new Error('Connection already in progress'));
-          return;
-        }
+        this.setStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
-        this.isConnecting = true;
-        
-        // Construct WebSocket URL - use the same host as the current page but with the backend port
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.hostname;
-        const port = '5000'; // Backend port is always 5000
-        const wsUrl = `${protocol}//${host}:${port}/ws?room=${roomId}`;
-        
+        const port = '5000';
+        let wsUrl = `${protocol}//${host}:${port}/ws?room=${encodeURIComponent(roomId)}`;
+
+        if (this.currentOptions?.name) {
+          wsUrl += `&name=${encodeURIComponent(this.currentOptions.name)}`;
+        }
+        if (this.currentOptions?.uid) {
+          wsUrl += `&uid=${encodeURIComponent(this.currentOptions.uid)}`;
+        }
+
+        const token = apiService.getAuthToken();
+        if (token) {
+          wsUrl += `&token=${encodeURIComponent(token)}`;
+        }
+
         console.log('🔌 Connecting to WebSocket:', wsUrl);
         this.socket = new WebSocket(wsUrl);
-        this.currentRoomId = roomId;
 
         this.socket.onopen = () => {
           console.log('✅ WebSocket connected to room:', roomId);
           this.reconnectAttempts = 0;
-          this.isConnecting = false;
-          this.connectionHandlers.forEach(handler => handler());
+          this.setStatus('connected');
+          this.startHeartbeat();
           resolve();
         };
 
         this.socket.onmessage = (event) => {
           try {
             const message: WebSocketMessage = JSON.parse(event.data);
-            console.log('📨 Received WebSocket message:', message);
             this.messageHandlers.forEach(handler => handler(message));
           } catch (error) {
             console.error('❌ Failed to parse WebSocket message:', error);
@@ -61,20 +88,21 @@ class WebSocketService {
 
         this.socket.onclose = (event) => {
           console.log('❌ WebSocket closed:', event.code, event.reason);
-          this.isConnecting = false;
+          this.stopHeartbeat();
           if (this.currentRoomId === roomId) {
             this.handleReconnect(roomId);
+          } else {
+            this.setStatus('disconnected');
           }
         };
 
         this.socket.onerror = (error) => {
           console.error('⚠️ WebSocket error:', error);
-          this.isConnecting = false;
           this.errorHandlers.forEach(handler => handler(error));
           reject(error);
         };
       } catch (error) {
-        this.isConnecting = false;
+        this.setStatus('disconnected');
         reject(error);
       }
     });
@@ -83,43 +111,99 @@ class WebSocketService {
   private handleReconnect(roomId: string) {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      console.log(`🔄 Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-      
+      this.setStatus('reconnecting');
+      const delay = Math.min(this.baseReconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), 10000);
+      console.log(`🔄 Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+
       setTimeout(() => {
-        this.connect(roomId).catch(error => {
-          console.error('❌ Reconnection failed:', error);
-        });
-      }, this.reconnectDelay * this.reconnectAttempts);
+        if (this.currentRoomId === roomId) {
+          this.connect(roomId, this.currentOptions || undefined).catch(error => {
+            console.error('❌ Reconnection failed:', error);
+          });
+        }
+      }, delay);
     } else {
       console.error('❌ Max reconnection attempts reached');
+      this.setStatus('disconnected');
+    }
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.pingInterval = setInterval(() => {
+      this.send({ type: 'ping' });
+    }, 25000);
+  }
+
+  private stopHeartbeat() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
   }
 
   disconnect() {
+    this.stopHeartbeat();
     if (this.socket) {
-      console.log('🔌 Disconnecting WebSocket');
       this.socket.close();
       this.socket = null;
       this.currentRoomId = null;
-      this.isConnecting = false;
+      this.currentOptions = null;
+      this.setStatus('disconnected');
     }
   }
 
   send(message: WebSocketMessage) {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      console.log('📤 Sending WebSocket message:', message);
       this.socket.send(JSON.stringify(message));
     } else {
-      console.warn('⚠️ WebSocket is not connected');
+      console.warn('⚠️ Cannot send message: WebSocket is not open', message);
     }
+  }
+
+  sendOp(rev: number, ops: Operation[]) {
+    this.send({
+      type: 'op',
+      rev,
+      ops,
+    });
+  }
+
+  sendCursor(cursor: CursorPosition) {
+    this.send({
+      type: 'cursor',
+      cursor,
+    });
+  }
+
+  sendPresence(name?: string, color?: string) {
+    this.send({
+      type: 'presence',
+      name,
+      color,
+    });
+  }
+
+  sendSync(rev: number) {
+    this.send({
+      type: 'sync',
+      rev,
+    });
   }
 
   onMessage(handler: MessageHandler) {
     this.messageHandlers.push(handler);
   }
 
-  onConnect(handler: ConnectionHandler) {
-    this.connectionHandlers.push(handler);
+  onStatusChange(handler: StatusHandler) {
+    this.statusHandlers.push(handler);
+    handler(this.status);
+  }
+
+  onConnect(handler: () => void) {
+    this.statusHandlers.push(status => {
+      if (status === 'connected') handler();
+    });
   }
 
   onError(handler: ErrorHandler) {
@@ -130,14 +214,12 @@ class WebSocketService {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
-  // Clear all handlers (useful for cleanup)
   clearHandlers() {
     this.messageHandlers = [];
-    this.connectionHandlers = [];
+    this.statusHandlers = [];
     this.errorHandlers = [];
   }
 }
 
 const wsService = new WebSocketService();
 export default wsService;
-

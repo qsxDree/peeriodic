@@ -1,6 +1,8 @@
 # Peeriodic - Real-Time Collaborative Text Editor
 # Makefile for development and deployment
 
+export TMPDIR ?= /tmp
+
 .PHONY: help install build test clean run-be run-fe dev
 
 # Default target
@@ -37,7 +39,7 @@ test:
 	@echo "Running backend tests..."
 	cd backend && go test ./...
 	@echo "Running frontend tests..."
-	cd frontend/client && npm test
+	cd frontend/client && CI=true npm test -- --watchAll=false
 
 # Clean build artifacts
 clean:

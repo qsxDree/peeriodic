@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/logoes0/peeriodic.git/middleware"
 	"github.com/logoes0/peeriodic.git/services"
 	"github.com/logoes0/peeriodic.git/utils"
 )
@@ -25,18 +26,21 @@ func NewRoomHandler(dbService *services.DatabaseService) *RoomHandler {
 // CreateRoomRequest represents the request body for creating a room
 type CreateRoomRequest struct {
 	Title string `json:"title"`
-	UID   string `json:"uid"`
+	UID   string `json:"uid,omitempty"`
 	Email string `json:"email,omitempty"`
 	Name  string `json:"name,omitempty"`
 }
 
 // RoomResponse represents a room in API responses
 type RoomResponse struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content,omitempty"`
-	UserUID   string `json:"user_uid,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Content    string `json:"content,omitempty"`
+	CurrentRev int    `json:"current_rev"`
+	Role       string `json:"role,omitempty"`
+	PublicRole string `json:"public_role,omitempty"`
+	UserUID    string `json:"user_uid,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
 }
 
 // HandleRooms handles room listing and creation
@@ -55,6 +59,10 @@ func (rh *RoomHandler) HandleRooms(w http.ResponseWriter, r *http.Request) {
 func (rh *RoomHandler) handleGetRooms(w http.ResponseWriter, r *http.Request) {
 	uid := r.URL.Query().Get("uid")
 	if uid == "" {
+		uid = middleware.GetUserUID(r.Context())
+	}
+
+	if uid == "" {
 		utils.BadRequest(w, "Missing uid parameter")
 		return
 	}
@@ -68,10 +76,14 @@ func (rh *RoomHandler) handleGetRooms(w http.ResponseWriter, r *http.Request) {
 	// Convert to response format
 	var response []RoomResponse
 	for _, room := range rooms {
+		role, _ := rh.DBService.GetEffectiveRole(room.ID, uid)
 		roomResponse := RoomResponse{
-			ID:        room.ID,
-			Title:     room.Title,
-			CreatedAt: room.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			ID:         room.ID,
+			Title:      room.Title,
+			CurrentRev: room.CurrentRev,
+			Role:       role,
+			PublicRole: room.PublicRole,
+			CreatedAt:  room.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		}
 		if room.UserUID != nil {
 			roomResponse.UserUID = *room.UserUID
@@ -85,29 +97,23 @@ func (rh *RoomHandler) handleGetRooms(w http.ResponseWriter, r *http.Request) {
 // handleCreateRoom creates a new room
 func (rh *RoomHandler) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	var req CreateRoomRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.BadRequest(w, "Invalid request body")
-		return
-	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	if req.UID == "" {
-		utils.BadRequest(w, "UID is required")
-		return
+	authUID := middleware.GetUserUID(r.Context())
+	if authUID != "" {
+		req.UID = authUID
 	}
 
 	if req.Title == "" {
 		req.Title = "Untitled Room"
 	}
 
-	// Ensure user exists
 	var userUID *string
 	if req.UID != "" {
-		user, err := rh.DBService.EnsureUserExists(req.UID, req.Email, req.Name)
-		if err != nil {
-			utils.InternalServerError(w, "Failed to create user")
-			return
+		userUID = &req.UID
+		if req.Email != "" {
+			_, _ = rh.DBService.EnsureUserExists(req.UID, req.Email, req.Name)
 		}
-		userUID = &user.UID
 	}
 
 	roomID := uuid.New().String()
@@ -118,8 +124,11 @@ func (rh *RoomHandler) handleCreateRoom(w http.ResponseWriter, r *http.Request) 
 	}
 
 	response := RoomResponse{
-		ID:    room.ID,
-		Title: room.Title,
+		ID:         room.ID,
+		Title:      room.Title,
+		CurrentRev: room.CurrentRev,
+		Role:       services.RoleOwner,
+		PublicRole: room.PublicRole,
 	}
 	if room.UserUID != nil {
 		response.UserUID = *room.UserUID
@@ -135,7 +144,6 @@ func (rh *RoomHandler) HandleRoomByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract room ID from URL path
 	pathParts := strings.Split(r.URL.Path, "/")
 	if len(pathParts) < 4 {
 		utils.BadRequest(w, "Invalid room ID")
@@ -158,10 +166,21 @@ func (rh *RoomHandler) HandleRoomByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check access permissions
+	userUID := middleware.GetUserUID(r.Context())
+	role, err := rh.DBService.GetEffectiveRole(roomID, userUID)
+	if err != nil || role == services.RoleNone {
+		utils.Forbidden(w, "Access denied to this document")
+		return
+	}
+
 	response := RoomResponse{
-		ID:      room.ID,
-		Title:   room.Title,
-		Content: room.Content,
+		ID:         room.ID,
+		Title:      room.Title,
+		Content:    room.Content,
+		CurrentRev: room.CurrentRev,
+		Role:       role,
+		PublicRole: room.PublicRole,
 	}
 	if room.UserUID != nil {
 		response.UserUID = *room.UserUID
@@ -170,14 +189,13 @@ func (rh *RoomHandler) HandleRoomByID(w http.ResponseWriter, r *http.Request) {
 	utils.SuccessResponse(w, response)
 }
 
-// HandleDeleteRoom handles room deletion
+// HandleDeleteRoom handles room deletion (owner only)
 func (rh *RoomHandler) HandleDeleteRoom(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		utils.MethodNotAllowed(w)
 		return
 	}
 
-	// Extract room ID from URL path
 	pathParts := strings.Split(r.URL.Path, "/")
 	if len(pathParts) < 4 {
 		utils.BadRequest(w, "Invalid room ID")
@@ -190,7 +208,14 @@ func (rh *RoomHandler) HandleDeleteRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := rh.DBService.DeleteRoom(roomID)
+	userUID := middleware.GetUserUID(r.Context())
+	role, err := rh.DBService.GetEffectiveRole(roomID, userUID)
+	if err != nil || !services.CanAdmin(role) {
+		utils.Forbidden(w, "Only the document owner can delete this room")
+		return
+	}
+
+	err = rh.DBService.DeleteRoom(roomID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			utils.NotFound(w, "Room not found")

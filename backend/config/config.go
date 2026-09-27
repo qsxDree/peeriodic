@@ -11,12 +11,19 @@ type Config struct {
 	Server    ServerConfig
 	Database  DatabaseConfig
 	WebSocket WebSocketConfig
+	Auth      AuthConfig
 }
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
 	Port string
 	Host string
+}
+
+// AuthConfig holds JWT and authentication configuration
+type AuthConfig struct {
+	JWTSecret        string
+	TokenExpiryHours int
 }
 
 // DatabaseConfig holds database-related configuration
@@ -55,6 +62,10 @@ func Load() (*Config, error) {
 			ReadBufferSize:  getEnvAsInt("WS_READ_BUFFER_SIZE", 1024),
 			WriteBufferSize: getEnvAsInt("WS_WRITE_BUFFER_SIZE", 1024),
 			CheckOrigin:     getEnvAsBool("WS_CHECK_ORIGIN", false),
+		},
+		Auth: AuthConfig{
+			JWTSecret:        getEnv("JWT_SECRET", "peeriodic-dev-super-secret-jwt-key"),
+			TokenExpiryHours: getEnvAsInt("JWT_EXPIRY_HOURS", 72),
 		},
 	}
 

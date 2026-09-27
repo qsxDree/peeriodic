@@ -23,6 +23,7 @@ CREATE TABLE users (
     uid VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255),
+    password_hash VARCHAR(255) DEFAULT '',
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -32,14 +33,57 @@ CREATE TABLE rooms (
     id VARCHAR(255) PRIMARY KEY,
     title VARCHAR(255) NOT NULL DEFAULT 'Untitled Room',
     content TEXT DEFAULT '',
+    current_rev INT NOT NULL DEFAULT 0,
+    public_role VARCHAR(32) NOT NULL DEFAULT 'editor',
     user_uid VARCHAR(255) REFERENCES users(uid) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Create room_operations table for event logging and OT history
+CREATE TABLE room_operations (
+    id BIGSERIAL PRIMARY KEY,
+    room_id VARCHAR(255) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    rev INT NOT NULL,
+    client_id VARCHAR(255) NOT NULL,
+    op_type VARCHAR(16) NOT NULL,
+    pos INT NOT NULL,
+    text TEXT,
+    length INT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_room_rev UNIQUE(room_id, rev)
+);
+
+-- Create document_members table for per-document roles (owner, editor, viewer)
+CREATE TABLE document_members (
+    id SERIAL PRIMARY KEY,
+    room_id VARCHAR(255) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_uid VARCHAR(255) NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+    role VARCHAR(32) NOT NULL DEFAULT 'editor',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_room_user UNIQUE(room_id, user_uid)
+);
+
+-- Create room_invites table for invite tokens
+CREATE TABLE room_invites (
+    id SERIAL PRIMARY KEY,
+    room_id VARCHAR(255) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    token VARCHAR(255) UNIQUE NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'editor',
+    created_by VARCHAR(255) REFERENCES users(uid) ON DELETE SET NULL,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Create indexes for better performance
 CREATE INDEX idx_rooms_user_uid ON rooms(user_uid);
 CREATE INDEX idx_rooms_updated_at ON rooms(updated_at);
+CREATE INDEX idx_room_operations_room_rev ON room_operations(room_id, rev);
+CREATE INDEX idx_doc_members_room ON document_members(room_id);
+CREATE INDEX idx_doc_members_user ON document_members(user_uid);
+CREATE INDEX idx_room_invites_token ON room_invites(token);
+CREATE INDEX idx_room_invites_room ON room_invites(room_id);
 CREATE INDEX idx_users_uid ON users(uid);
 CREATE INDEX idx_users_email ON users(email);
 

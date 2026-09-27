@@ -61,3 +61,19 @@ func MethodNotAllowed(w http.ResponseWriter) {
 	ErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 }
 
+// Unauthorized sends a 401 Unauthorized response
+func Unauthorized(w http.ResponseWriter, message string) {
+	if message == "" {
+		message = "Unauthorized"
+	}
+	ErrorResponse(w, http.StatusUnauthorized, message)
+}
+
+// Forbidden sends a 403 Forbidden response
+func Forbidden(w http.ResponseWriter, message string) {
+	if message == "" {
+		message = "Forbidden"
+	}
+	ErrorResponse(w, http.StatusForbidden, message)
+}
+

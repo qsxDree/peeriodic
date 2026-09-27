@@ -38,11 +38,14 @@ func main() {
 		}
 	}()
 
+	// Initialize auth service
+	authService := services.NewAuthService(cfg)
+
 	// Initialize WebSocket service
-	wsService := services.NewWebSocketService(cfg)
+	wsService := services.NewWebSocketService(cfg, authService)
 
 	// Initialize router
-	router := routers.NewRouter(dbService, wsService)
+	router := routers.NewRouter(dbService, wsService, authService)
 	router.SetupRoutes()
 
 	// Create HTTP server

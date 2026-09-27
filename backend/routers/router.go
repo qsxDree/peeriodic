@@ -8,21 +8,28 @@ import (
 	"github.com/logoes0/peeriodic.git/handlers"
 	"github.com/logoes0/peeriodic.git/middleware"
 	"github.com/logoes0/peeriodic.git/services"
+	"github.com/logoes0/peeriodic.git/utils"
 )
 
 // Router handles all HTTP routing
 type Router struct {
 	roomHandler     *handlers.RoomHandler
 	documentHandler *handlers.DocumentHandler
+	authHandler     *handlers.AuthHandler
+	inviteHandler   *handlers.InviteHandler
 	wsService       *services.WebSocketService
+	authService     *services.AuthService
 }
 
 // NewRouter creates a new router instance
-func NewRouter(dbService *services.DatabaseService, wsService *services.WebSocketService) *Router {
+func NewRouter(dbService *services.DatabaseService, wsService *services.WebSocketService, authService *services.AuthService) *Router {
 	return &Router{
 		roomHandler:     handlers.NewRoomHandler(dbService),
 		documentHandler: handlers.NewDocumentHandler(dbService),
+		authHandler:     handlers.NewAuthHandler(dbService, authService),
+		inviteHandler:   handlers.NewInviteHandler(dbService, authService),
 		wsService:       wsService,
+		authService:     authService,
 	}
 }
 
@@ -31,12 +38,20 @@ func (r *Router) SetupRoutes() {
 	// WebSocket endpoint - NO middleware (WebSocket needs direct access to response writer)
 	http.HandleFunc("/ws", r.handleWebSocket)
 
-	// HTTP API endpoints - apply CORS middleware
-	http.HandleFunc("/api/rooms", middleware.Logging(middleware.CORS(r.handleRooms)))
-	http.HandleFunc("/api/save", middleware.Logging(middleware.CORS(r.handleSave)))
+	// Auth API endpoints
+	http.HandleFunc("/api/auth/register", middleware.Logging(middleware.CORS(r.authHandler.HandleRegister)))
+	http.HandleFunc("/api/auth/login", middleware.Logging(middleware.CORS(r.authHandler.HandleLogin)))
+	http.HandleFunc("/api/auth/me", middleware.Logging(middleware.CORS(middleware.RequireAuth(r.authService)(r.authHandler.HandleMe))))
 
-	// Handle room-specific operations with path parameters
-	http.HandleFunc("/api/rooms/", middleware.Logging(middleware.CORS(r.handleRoomOperations)))
+	// Room & Document API endpoints
+	http.HandleFunc("/api/rooms", middleware.Logging(middleware.CORS(middleware.OptionalAuth(r.authService)(r.handleRooms))))
+	http.HandleFunc("/api/save", middleware.Logging(middleware.CORS(middleware.OptionalAuth(r.authService)(r.handleSave))))
+
+	// Handle room-specific operations and sub-routes (/api/rooms/:id/...)
+	http.HandleFunc("/api/rooms/", middleware.Logging(middleware.CORS(middleware.OptionalAuth(r.authService)(r.handleRoomOperations))))
+
+	// Handle invite token acceptance (/api/invites/:token/accept)
+	http.HandleFunc("/api/invites/", middleware.Logging(middleware.CORS(middleware.RequireAuth(r.authService)(r.inviteHandler.HandleAcceptInvite))))
 }
 
 // handleWebSocket handles WebSocket connections
@@ -49,43 +64,63 @@ func (r *Router) handleRooms(w http.ResponseWriter, req *http.Request) {
 	r.roomHandler.HandleRooms(w, req)
 }
 
-// handleRoomOperations handles room-specific operations (GET, DELETE)
+// handleRoomOperations handles room-specific operations and sub-resources
 func (r *Router) handleRoomOperations(w http.ResponseWriter, req *http.Request) {
-	log.Printf("handleRoomOperations called with path: %s", req.URL.Path)
+	cleanPath := strings.Trim(req.URL.Path, "/")
+	pathParts := strings.Split(cleanPath, "/")
 
-	// Extract room ID from path
-	pathParts := strings.Split(req.URL.Path, "/")
-	log.Printf("Path parts: %v", pathParts)
-
-	if len(pathParts) < 4 {
-		log.Printf("Invalid path length: %d", len(pathParts))
-		http.Error(w, "Invalid room ID", http.StatusBadRequest)
+	// Expected formats:
+	// api/rooms/:id
+	// api/rooms/:id/invites
+	// api/rooms/:id/members
+	// api/rooms/:id/members/:uid
+	if len(pathParts) < 3 {
+		utils.BadRequest(w, "Invalid room URL")
 		return
 	}
-	roomID := pathParts[3]
-	log.Printf("Extracted room ID: %s", roomID)
 
+	roomID := pathParts[2]
 	if roomID == "" {
-		log.Printf("Empty room ID")
-		http.Error(w, "Missing room ID", http.StatusBadRequest)
+		utils.BadRequest(w, "Missing room ID")
 		return
 	}
 
-	// Create a new request with the room ID in the path for the handlers
-	req.URL.Path = "/api/rooms/" + roomID
-	log.Printf("Modified path: %s", req.URL.Path)
-
-	switch req.Method {
-	case http.MethodGet:
-		log.Printf("Handling GET request for room: %s", roomID)
-		r.roomHandler.HandleRoomByID(w, req)
-	case http.MethodDelete:
-		log.Printf("Handling DELETE request for room: %s", roomID)
-		r.roomHandler.HandleDeleteRoom(w, req)
-	default:
-		log.Printf("Method not allowed: %s", req.Method)
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	// 1. Direct operations on /api/rooms/:id
+	if len(pathParts) == 3 {
+		switch req.Method {
+		case http.MethodGet:
+			r.roomHandler.HandleRoomByID(w, req)
+		case http.MethodDelete:
+			r.roomHandler.HandleDeleteRoom(w, req)
+		default:
+			utils.MethodNotAllowed(w)
+		}
+		return
 	}
+
+	subResource := pathParts[3]
+
+	// 2. Sub-resource: /api/rooms/:id/invites
+	if subResource == "invites" {
+		r.inviteHandler.HandleCreateInvite(w, req, roomID)
+		return
+	}
+
+	// 3. Sub-resource: /api/rooms/:id/members
+	if subResource == "members" {
+		if len(pathParts) == 4 {
+			r.inviteHandler.HandleMembers(w, req, roomID)
+		} else if len(pathParts) == 5 {
+			targetUID := pathParts[4]
+			r.inviteHandler.HandleMemberOperations(w, req, roomID, targetUID)
+		} else {
+			utils.BadRequest(w, "Invalid members path")
+		}
+		return
+	}
+
+	log.Printf("⚠️ Unknown sub-resource '%s' for room %s", subResource, roomID)
+	utils.NotFound(w, "Resource not found")
 }
 
 // handleSave handles document saving

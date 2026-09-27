@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/logoes0/peeriodic.git/middleware"
 	"github.com/logoes0/peeriodic.git/services"
 	"github.com/logoes0/peeriodic.git/utils"
 )
@@ -61,9 +62,17 @@ func (dh *DocumentHandler) HandleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check write permissions
+	userUID := middleware.GetUserUID(r.Context())
+	role, err := dh.dbService.GetEffectiveRole(roomID, userUID)
+	if err != nil || !services.CanWrite(role) {
+		utils.Forbidden(w, "You have read-only (viewer) access to this document")
+		return
+	}
+
 	// Save document to database
 	log.Printf("Saving document for room %s, content length: %d", roomID, len(req.Content))
-	err := dh.dbService.UpdateRoomContent(roomID, req.Content)
+	err = dh.dbService.UpdateRoomContent(roomID, req.Content)
 	if err != nil {
 		log.Printf("Failed to save document for room %s: %v", roomID, err)
 		utils.InternalServerError(w, "Failed to save document")
