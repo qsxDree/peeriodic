@@ -1,8 +1,9 @@
 package handlers
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
+	"net/mail"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,15 +35,15 @@ func (ah *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.BadRequest(w, "Invalid request body")
+	if err := utils.DecodeJSON(w, r, &req); err != nil {
 		return
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 	req.Name = strings.TrimSpace(req.Name)
 
-	if req.Email == "" || !strings.Contains(req.Email, "@") {
+	address, emailErr := mail.ParseAddress(req.Email)
+	if emailErr != nil || address.Address != req.Email || len(req.Email) > 255 {
 		utils.BadRequest(w, "Valid email is required")
 		return
 	}
@@ -51,16 +52,13 @@ func (ah *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		utils.BadRequest(w, "Password must be at least 6 characters")
 		return
 	}
+	if len(req.Password) > 72 || len([]rune(req.Name)) > 255 {
+		utils.BadRequest(w, "Password must be at most 72 bytes and name at most 255 characters")
+		return
+	}
 
 	if req.Name == "" {
 		req.Name = strings.Split(req.Email, "@")[0]
-	}
-
-	// Check if user already exists
-	existingUser, _ := ah.dbService.GetUserByEmail(req.Email)
-	if existingUser != nil {
-		utils.BadRequest(w, "A user with this email already exists")
-		return
 	}
 
 	// Hash password
@@ -71,7 +69,11 @@ func (ah *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userUID := uuid.New().String()
-	user, err := ah.dbService.CreateUserWithPassword(userUID, req.Email, req.Name, passwordHash)
+	user, err := ah.dbService.CreateUserWithPassword(r.Context(), userUID, req.Email, req.Name, passwordHash)
+	if services.IsUniqueViolation(err) {
+		utils.ErrorResponse(w, http.StatusConflict, "A user with this email already exists")
+		return
+	}
 	if err != nil {
 		utils.InternalServerError(w, "Failed to create user account")
 		return
@@ -85,14 +87,7 @@ func (ah *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	utils.SuccessResponse(w, models.AuthResponse{
 		Token: token,
-		User: models.User{
-			ID:        user.ID,
-			UID:       user.UID,
-			Email:     user.Email,
-			Name:      user.Name,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		},
+		User:  *user,
 	})
 }
 
@@ -104,8 +99,7 @@ func (ah *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.BadRequest(w, "Invalid request body")
+	if err := utils.DecodeJSON(w, r, &req); err != nil {
 		return
 	}
 
@@ -115,9 +109,13 @@ func (ah *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := ah.dbService.GetUserByEmail(req.Email)
-	if err != nil || user == nil {
+	user, err := ah.dbService.GetUserByEmail(r.Context(), req.Email)
+	if errors.Is(err, services.ErrNotFound) {
 		utils.Unauthorized(w, "Invalid email or password")
+		return
+	}
+	if err != nil {
+		utils.InternalServerError(w, "Failed to sign in")
 		return
 	}
 
@@ -134,14 +132,7 @@ func (ah *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	utils.SuccessResponse(w, models.AuthResponse{
 		Token: token,
-		User: models.User{
-			ID:        user.ID,
-			UID:       user.UID,
-			Email:     user.Email,
-			Name:      user.Name,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		},
+		User:  *user,
 	})
 }
 
@@ -159,20 +150,13 @@ func (ah *AuthHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ah.dbService != nil {
-		user, err := ah.dbService.GetUserByUID(uid)
+		user, err := ah.dbService.GetUserByUID(r.Context(), uid)
 		if err != nil {
 			utils.NotFound(w, "User not found")
 			return
 		}
 
-		utils.SuccessResponse(w, models.User{
-			ID:        user.ID,
-			UID:       user.UID,
-			Email:     user.Email,
-			Name:      user.Name,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		})
+		utils.SuccessResponse(w, user)
 		return
 	}
 

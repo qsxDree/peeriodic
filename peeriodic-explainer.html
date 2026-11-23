@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en" data-theme="blueprint" data-mode="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Answer me with HTML 0.4.3">
+<title>Peeriodic Architectural Deep Dive</title>
+<style>
+html[data-theme="blueprint"], html[data-theme="blueprint"][data-mode="light"] {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 0px;
+  --shadow: none;
+  --bw: 1.5px;
+  --head-font: var(--font-sans);
+  --bg: #f6f6f3;
+  --paper: #ffffff;
+  --ink: #16181d;
+  --ink-2: #4b5260;
+  --ink-3: #8b929e;
+  --line: #1d2026;
+  --line-2: #d6dae1;
+  --fill: #f3f5f8;
+  --accent: #1d5fbf;
+  --accent-bg: #e4ecf8;
+  --ok: #1d5fbf;
+  --ok-bg: #e4ecf8;
+  --err: #c62828;
+  --err-bg: #fbeaea;
+  --warn: #a8620a;
+  --warn-bg: #fdf3e2;
+  --head-bg: #16181d;
+  --head-fg: #ffffff;
+}
+html[data-theme="blueprint"][data-mode="dark"] {
+  --bg: #081322;
+  --paper: #0d1c31;
+  --ink: #e6edf7;
+  --ink-2: #a9b8cc;
+  --ink-3: #6b7f99;
+  --line: #c9d6e8;
+  --line-2: #23385a;
+  --fill: #12253f;
+  --accent: #6ea8ff;
+  --accent-bg: #16305a;
+  --ok: #6ea8ff;
+  --ok-bg: #16305a;
+  --err: #ff7070;
+  --err-bg: #3b1620;
+  --warn: #f0b14a;
+  --warn-bg: #3a2a10;
+  --head-bg: #e6edf7;
+  --head-fg: #081322;
+}
+@media (prefers-color-scheme: dark) {
+html[data-theme="blueprint"][data-mode="auto"] {
+  --bg: #081322;
+  --paper: #0d1c31;
+  --ink: #e6edf7;
+  --ink-2: #a9b8cc;
+  --ink-3: #6b7f99;
+  --line: #c9d6e8;
+  --line-2: #23385a;
+  --fill: #12253f;
+  --accent: #6ea8ff;
+  --accent-bg: #16305a;
+  --ok: #6ea8ff;
+  --ok-bg: #16305a;
+  --err: #ff7070;
+  --err-bg: #3b1620;
+  --warn: #f0b14a;
+  --warn-bg: #3a2a10;
+  --head-bg: #e6edf7;
+  --head-fg: #081322;
+}
+}
+
+html[data-theme="shadcn"], html[data-theme="shadcn"][data-mode="light"] {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 8px;
+  --shadow: 0 1px 2px 0 rgba(0,0,0,0.05);
+  --bw: 1px;
+  --head-font: var(--font-sans);
+  --bg: #fafafa;
+  --paper: #ffffff;
+  --ink: #09090b;
+  --ink-2: #71717a;
+  --ink-3: #a1a1aa;
+  --line: #e4e4e7;
+  --line-2: #f0f0f2;
+  --fill: #f4f4f5;
+  --accent: #2563eb;
+  --accent-bg: #eff6ff;
+  --ok: #16a34a;
+  --ok-bg: #f0fdf4;
+  --err: #dc2626;
+  --err-bg: #fef2f2;
+  --warn: #d97706;
+  --warn-bg: #fffbeb;
+  --head-bg: #18181b;
+  --head-fg: #fafafa;
+}
+html[data-theme="shadcn"][data-mode="dark"] {
+  --bg: #09090b;
+  --paper: #121215;
+  --ink: #fafafa;
+  --ink-2: #a1a1aa;
+  --ink-3: #71717a;
+  --line: #27272a;
+  --line-2: #1c1c1f;
+  --fill: #18181b;
+  --accent: #60a5fa;
+  --accent-bg: #172554;
+  --ok: #4ade80;
+  --ok-bg: #052e16;
+  --err: #f87171;
+  --err-bg: #450a0a;
+  --warn: #fbbf24;
+  --warn-bg: #451a03;
+  --head-bg: #fafafa;
+  --head-fg: #18181b;
+}
+@media (prefers-color-scheme: dark) {
+html[data-theme="shadcn"][data-mode="auto"] {
+  --bg: #09090b;
+  --paper: #121215;
+  --ink: #fafafa;
+  --ink-2: #a1a1aa;
+  --ink-3: #71717a;
+  --line: #27272a;
+  --line-2: #1c1c1f;
+  --fill: #18181b;
+  --accent: #60a5fa;
+  --accent-bg: #172554;
+  --ok: #4ade80;
+  --ok-bg: #052e16;
+  --err: #f87171;
+  --err-bg: #450a0a;
+  --warn: #fbbf24;
+  --warn-bg: #451a03;
+  --head-bg: #fafafa;
+  --head-fg: #18181b;
+}
+}
+
+/* Answer me with HTML base — 只引用主题变量，禁止写死颜色（主题 token 见 themes/index.js） */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-sans); font-size: 14px; line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+code, pre, kbd { font-family: var(--font-mono); }
+
+/* ── 工具栏 ─────────────────────────────── */
+.am-toolbar {
+  position: fixed; top: 12px; right: 12px; z-index: 10; display: flex; gap: 6px;
+}
+.am-btn {
+  font: 12px/1 var(--font-sans); color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line-2); border-radius: var(--radius); padding: 7px 10px; cursor: pointer;
+}
+.am-btn:hover { border-color: var(--ink-3); }
+.am-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── 页头 ───────────────────────────────── */
+.am-head { margin: 0 0 20px; padding-right: 260px; }
+.am-head h1 { margin: 0; font-size: 24px; line-height: 1.25; letter-spacing: -0.01em; }
+.am-sub { margin: 4px 0 0; color: var(--ink-2); }
+.am-head-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
+.am-head-meta b { font-family: var(--font-mono); font-weight: 400; color: var(--ink-3); margin-right: 6px; }
+.am-intro { margin-top: 12px; max-width: 80ch; }
+
+/* ── sheet 图纸板 ────────────────────────── */
+.am-sheet { max-width: 1680px; margin: 0 auto; padding: 32px 28px 40px; }
+.am-frame { position: relative; }
+.am-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
+  gap: 20px; align-items: start;
+}
+.am-ruler { display: none; }
+html[data-theme="blueprint"] .am-frame { border: 1px solid var(--line); padding: 30px; }
+html[data-theme="blueprint"] .am-frame::before {
+  content: ""; position: absolute; inset: 18px; border: 1px solid var(--line); pointer-events: none;
+}
+html[data-theme="blueprint"] .am-ruler {
+  display: flex; position: absolute; font: 10px/1 var(--font-mono); color: var(--ink-3);
+}
+.am-ruler span { flex: 1; display: flex; align-items: center; justify-content: center; }
+.am-ruler--top, .am-ruler--bottom { left: 18px; right: 18px; height: 18px; }
+.am-ruler--top { top: 0; }
+.am-ruler--bottom { bottom: 0; }
+.am-ruler--left, .am-ruler--right { top: 18px; bottom: 18px; width: 18px; flex-direction: column; }
+.am-ruler--left { left: 0; }
+.am-ruler--right { right: 0; }
+.am-ruler--top span + span, .am-ruler--bottom span + span { border-left: 1px solid var(--line); }
+.am-ruler--left span + span, .am-ruler--right span + span { border-top: 1px solid var(--line); }
+
+/* ── 面板 ───────────────────────────────── */
+.am-panel {
+  background: var(--paper); border: var(--bw) solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); min-width: 0; overflow: hidden;
+}
+.am-panel-head {
+  display: flex; align-items: stretch; gap: 0; border-bottom: var(--bw) solid var(--line); min-height: 34px;
+}
+.am-panel-id {
+  display: flex; align-items: center; justify-content: center; min-width: 34px; padding: 0 8px;
+  background: var(--head-bg); color: var(--head-fg); font-weight: 600; font-size: 14px;
+}
+html[data-theme="shadcn"] .am-panel-id { border-radius: 6px; min-width: 24px; height: 24px; margin: 9px 0 9px 14px; font-size: 12px; }
+html[data-theme="shadcn"] .am-panel-head { border-bottom-width: 1px; }
+.am-panel-head h2 { margin: 0; padding: 7px 12px; font-size: 15px; font-weight: 600; flex: 1; display: flex; align-items: center; }
+.am-panel-meta { align-self: center; padding: 0 12px; font: 11px/1.3 var(--font-mono); color: var(--ink-2); text-align: right; }
+.am-panel-body { padding: 14px 16px 16px; }
+.am-panel-body > * + * { margin-top: 12px; }
+
+/* ── Markdown 正文 ───────────────────────── */
+.am-md > :first-child { margin-top: 0; }
+.am-md > :last-child { margin-bottom: 0; }
+.am-md p { margin: 0 0 8px; }
+.am-md ul, .am-md ol { margin: 0 0 8px; padding-left: 20px; }
+.am-md li + li { margin-top: 3px; }
+.am-md h3, .am-md h4 { margin: 14px 0 6px; font-size: 13px; }
+.am-md a { color: var(--accent); }
+.am-md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line-2); color: var(--ink-2); }
+.am-md :not(pre) > code { font-size: 0.9em; background: var(--fill); padding: 1px 5px; border-radius: 4px; }
+.am-md hr { border: 0; border-top: 1px solid var(--line-2); margin: 12px 0; }
+.am-md table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.am-md th {
+  text-align: left; font: 11px/1.3 var(--font-mono); color: var(--ink-2); font-weight: 400;
+  padding: 6px 10px; border-bottom: 1px solid var(--line-2);
+}
+.am-md td { padding: 7px 10px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+.am-md tbody tr:nth-child(even) td { background: var(--fill); }
+.am-table-wrap { overflow-x: auto; }
+.am-code {
+  margin: 0; padding: 12px 14px; background: var(--fill); border: 1px solid var(--line-2);
+  border-radius: var(--radius); overflow-x: auto; font-size: 12.5px; line-height: 1.5;
+}
+
+/* ── 状态徽章 ok / no / warn ──────────────── */
+.am-status { white-space: nowrap; font-weight: 500; }
+.am-status--ok { color: var(--ok); }
+.am-status--no { color: var(--err); }
+.am-status--warn { color: var(--warn); }
+.am-status-icon { display: inline-block; width: 1.1em; font-weight: 700; }
+
+/* ── callout ─────────────────────────────── */
+.am-callout {
+  border: 1px solid var(--line-2); border-left: 3px solid var(--accent); background: var(--accent-bg);
+  padding: 10px 14px; border-radius: var(--radius);
+}
+.am-callout--ok { border-left-color: var(--ok); background: var(--ok-bg); }
+.am-callout--warn { border-left-color: var(--warn); background: var(--warn-bg); }
+.am-callout--err { border-left-color: var(--err); background: var(--err-bg); }
+.am-callout-title { font-weight: 600; margin-bottom: 4px; }
+
+/* ── kv 标题栏格 ─────────────────────────── */
+.am-kv {
+  display: grid; grid-template-columns: repeat(var(--kv-cols, 2), minmax(0, 1fr)); margin: 0;
+  border-top: var(--bw) solid var(--line); border-left: var(--bw) solid var(--line);
+}
+.am-kv-cell { border-right: var(--bw) solid var(--line); border-bottom: var(--bw) solid var(--line); padding: 6px 10px 8px; min-width: 0; }
+.am-kv-cell--wide { grid-column: 1 / -1; }
+.am-kv dt { font: 11px/1.4 var(--font-mono); color: var(--ink-2); }
+.am-kv dd { margin: 2px 0 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.am-kv-cell--wide dd { font-size: 17px; font-weight: 600; }
+html[data-theme="shadcn"] .am-kv { border-color: var(--line); border-radius: var(--radius); overflow: hidden; }
+
+/* ── timeline ────────────────────────────── */
+.am-timeline { list-style: none; margin: 0; padding: 0; }
+.am-timeline--h { display: grid; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); padding-top: 4px; }
+.am-timeline--h li { position: relative; text-align: center; padding: 0 6px; }
+.am-timeline--h li::before {
+  content: ""; position: absolute; top: 31px; left: 0; right: 0; border-top: var(--bw) solid var(--line);
+}
+.am-timeline--h li:first-child::before { left: 50%; }
+.am-timeline--h li:last-child::before { right: 50%; }
+.am-tl-when { display: block; font-size: 15px; font-weight: 500; height: 24px; }
+.am-tl-dot {
+  position: relative; display: block; width: 11px; height: 11px; margin: 2px auto 8px;
+  border: var(--bw) solid var(--line); border-radius: 50%; background: var(--paper);
+}
+.am-tl-item--hi .am-tl-dot { background: var(--accent); border-color: var(--accent); }
+.am-tl-title { display: block; font-size: 12.5px; font-weight: 500; }
+.am-tl-text { display: block; font-size: 12px; color: var(--ink-2); line-height: 1.45; }
+.am-timeline--v li { position: relative; padding: 0 0 14px 22px; }
+.am-timeline--v li::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: -6px; border-left: var(--bw) solid var(--line-2); }
+.am-timeline--v li:last-child::before { display: none; }
+.am-timeline--v .am-tl-dot { position: absolute; left: 0; top: 4px; margin: 0; }
+.am-timeline--v .am-tl-when { display: inline; height: auto; font: 12px var(--font-mono); color: var(--ink-2); margin-right: 8px; }
+.am-timeline--v .am-tl-title { display: inline; font-size: 14px; }
+.am-timeline--v .am-tl-text { margin-top: 2px; }
+
+/* ── annot 句子标注 ──────────────────────── */
+.am-annot + .am-annot { border-top: 1px solid var(--line-2); padding-top: 12px; }
+.am-annot-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.am-annot-meta { font: 11px var(--font-mono); font-weight: 400; color: var(--ink-2); }
+.am-annot-scroll { overflow-x: auto; }
+.am-annot-line {
+  position: relative; display: inline-block; white-space: pre; font: 14px/1.6 var(--font-mono);
+  padding-bottom: calc(var(--rows, 0) * 17px + 14px);
+}
+.am-annot-line--wrap { display: block; white-space: normal; padding-bottom: 10px; }
+.am-annot-line--wrap .am-seg { white-space: nowrap; }
+.am-seg { position: relative; }
+.am-seg::after {
+  content: ""; position: absolute; left: 1px; right: 1px; top: calc(100% + 1px); height: 5px;
+  border: 1px solid var(--accent); border-top: 0;
+}
+.am-seg-n {
+  position: absolute; left: 0; top: calc(100% + 8px + var(--row, 0) * 17px);
+  font: 11px/16px var(--font-sans); color: var(--accent); white-space: nowrap;
+}
+.am-seg--err { color: var(--err); }
+.am-seg--err::after { border-color: var(--err); }
+.am-seg--err .am-seg-n { color: var(--err); }
+.am-annot-caption { font-size: 12px; color: var(--ink-2); }
+
+/* ── limits 限值条 ───────────────────────── */
+.am-lim + .am-lim { margin-top: 14px; }
+.am-lim-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 4px; }
+.am-lim-val { font: 12px var(--font-mono); color: var(--accent); white-space: nowrap; }
+.am-lim-track { position: relative; height: 12px; border: 1px solid var(--line-2); background: var(--fill); border-radius: calc(var(--radius) / 2); }
+.am-lim-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-bg); border-right: 1px solid var(--accent); }
+.am-lim-mark { position: absolute; top: -4px; bottom: -4px; border-left: 2px solid var(--accent); }
+.am-lim.is-over .am-lim-fill { background: var(--err-bg); border-right-color: var(--err); }
+.am-lim.is-over .am-lim-val { color: var(--err); }
+.am-lim-ticks { position: relative; height: 16px; font: 10px/16px var(--font-mono); color: var(--ink-3); }
+.am-lim-ticks span { position: absolute; transform: translateX(-50%); }
+.am-lim-ticks span:first-child { transform: none; }
+.am-lim-note { font-size: 11px; color: var(--ink-2); margin-left: 6px; }
+
+/* ── tree 结构树 ─────────────────────────── */
+.am-tree { font-size: 13px; }
+.am-tree-root { display: flex; justify-content: center; position: relative; padding-bottom: 18px; }
+.am-tree-root::after { content: ""; position: absolute; bottom: 0; left: 50%; height: 18px; border-left: var(--bw) solid var(--line); }
+.am-tree-root--solo { padding-bottom: 12px; }
+.am-tree-root--solo::after { display: none; }
+.am-tree-box {
+  border: var(--bw) solid var(--line); background: var(--paper); padding: 6px 14px; text-align: center;
+  border-radius: var(--radius); font-weight: 600;
+}
+.am-tree-box small { display: block; font-weight: 400; color: var(--ink-2); font-size: 12px; }
+.am-tree-box--root { background: var(--accent-bg); font-size: 15px; padding: 8px 28px; }
+.am-tree-cols { display: grid; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); }
+.am-tree-col { position: relative; padding: 18px 8px 0; min-width: 0; }
+.am-tree-col::before { content: ""; position: absolute; top: 0; left: 0; right: 0; border-top: var(--bw) solid var(--line); }
+.am-tree-col:first-child::before { left: 50%; }
+.am-tree-col:last-child::before { right: 50%; }
+.am-tree-col::after { content: ""; position: absolute; top: 0; left: 50%; height: 18px; border-left: var(--bw) solid var(--line); }
+.am-tree-list, .am-tree-list ul { list-style: none; margin: 0; padding: 0; }
+.am-tree-col > .am-tree-list { margin: 8px 0 0 14px; }
+.am-tree-list ul { margin-left: 16px; }
+.am-tree-list li { position: relative; padding: 3px 0 3px 18px; }
+.am-tree-list li::before { content: ""; position: absolute; left: 0; top: 0.95em; width: 12px; border-top: 1px solid var(--ink-3); }
+.am-tree-list li::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1px solid var(--ink-3); }
+.am-tree-list li:last-child::after { bottom: auto; height: 0.95em; }
+.am-tree-tag { font: 11px var(--font-mono); color: var(--ink-3); margin-right: 4px; }
+.am-tree code { font: 12px var(--font-mono); }
+.am-tree-sub { display: block; font-size: 11.5px; color: var(--ink-2); }
+.am-tree-hi > .am-tree-label { color: var(--accent); font-weight: 600; }
+
+/* ── 图（flow / sequence）───────────────── */
+.am-diagram { margin: 0; overflow-x: auto; text-align: center; }
+.am-diagram svg { max-width: 100%; height: auto; font-family: var(--font-sans); }
+.am-diagram text { fill: var(--ink); font-size: 13px; }
+.am-node-shape { fill: var(--paper); stroke: var(--line); stroke-width: var(--bw); }
+.am-node--hi .am-node-shape { fill: var(--accent-bg); stroke: var(--accent); }
+.am-node--hi text { fill: var(--accent); font-weight: 600; }
+.am-edge { fill: none; stroke: var(--ink-2); stroke-width: 1.3; }
+.am-edge--dashed { stroke-dasharray: 5 4; }
+.am-arrow { fill: var(--ink-2); }
+.am-edge-label rect { fill: var(--paper); }
+.am-diagram .am-edge-label text { fill: var(--accent); font-size: 11.5px; }
+.am-cluster { fill: var(--fill); stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 4 3; }
+.am-diagram .am-cluster-label { fill: var(--ink-2); font: 11px var(--font-mono); }
+.am-lifeline { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 4 4; }
+.am-actor { fill: var(--paper); stroke: var(--line); stroke-width: var(--bw); }
+.am-note { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1; }
+.am-diagram .am-step { fill: var(--ink-3); font: 10px var(--font-mono); }
+
+/* ── doc 线性讲解 ────────────────────────── */
+.am-doc { max-width: 1120px; margin: 0 auto; padding: 40px 28px 64px; }
+.am-doc-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 32px; align-items: start; }
+.am-doc-layout--notoc { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
+.am-toc { position: sticky; top: 24px; font-size: 13px; }
+.am-toc a { display: block; color: var(--ink-2); text-decoration: none; padding: 4px 0 4px 10px; border-left: 2px solid var(--line-2); }
+.am-toc a:hover { color: var(--ink); border-left-color: var(--accent); }
+.am-doc-body > .am-panel + .am-panel { margin-top: 20px; }
+
+/* ── 响应式与打印 ─────────────────────────── */
+@media (max-width: 1100px) {
+  .am-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .am-grid > .am-panel { grid-column: auto !important; }
+  .am-grid > .am-panel.am-span-wide { grid-column: 1 / -1 !important; }
+}
+@media (max-width: 760px) {
+  .am-sheet, .am-doc { padding: 56px 12px 24px; }
+  .am-head { padding-right: 0; }
+  .am-grid { grid-template-columns: minmax(0, 1fr); }
+  .am-grid > .am-panel.am-span-wide { grid-column: auto !important; }
+  html[data-theme="blueprint"] .am-frame { padding: 0; border: 0; }
+  html[data-theme="blueprint"] .am-frame::before, html[data-theme="blueprint"] .am-ruler { display: none; }
+  .am-doc-layout { grid-template-columns: minmax(0, 1fr); }
+  .am-toc { position: static; }
+  .am-timeline--h { grid-template-columns: minmax(0, 1fr); }
+  .am-tree-cols { grid-template-columns: minmax(0, 1fr); }
+}
+.am-colophon { text-align: center; padding: 0 0 28px; font: 11px var(--font-mono); color: var(--ink-3); }
+
+@media print {
+  .am-toolbar { display: none; }
+  body { background: var(--paper); }
+  .am-panel { break-inside: avoid; box-shadow: none; }
+}
+.am-panel--bare { border: 0; background: transparent; box-shadow: none; }
+.am-panel--bare > .am-panel-body { padding: 0; }
+.am-panel--bare .am-kv { background: var(--paper); }
+
+</style>
+</head>
+<body>
+<div class="am-toolbar">
+<button class="am-btn" type="button" data-am="theme" data-labels="{&quot;blueprint&quot;:&quot;Theme: Blueprint&quot;,&quot;shadcn&quot;:&quot;Theme: Cards&quot;}">Theme: Blueprint</button>
+<button class="am-btn" type="button" data-am="mode" data-labels="{&quot;auto&quot;:&quot;Mode: Auto&quot;,&quot;light&quot;:&quot;Mode: Light&quot;,&quot;dark&quot;:&quot;Mode: Dark&quot;}">Mode: Dark</button>
+<button class="am-btn" type="button" data-am="copy" data-done="Copied ✓">Copy source</button>
+</div>
+<main class="am-doc">
+<header class="am-head"><h1>Peeriodic Architectural Deep Dive</h1><p class="am-sub">Collaborative Real-Time Markdown Editor with Centralized Operational Transformation</p><div class="am-head-meta"><span><b>source</b>docs/ &amp; codebase inspection</span></div><div class="am-intro am-md"><div class="am-callout am-callout--info" role="note"><div class="am-callout-title">System Summary</div><div class="am-callout-body am-md"><p>Peeriodic is a real-time collaborative Markdown editor built with Go and React. It resolves concurrent edits with a centralized Operational Transformation engine. The architecture uses PostgreSQL for persistence and streams live presence over WebSockets.</p>
+</div></div></div></header>
+<div class="am-doc-layout">
+<nav class="am-toc" aria-label="目录"><a href="#panel-A">A · System Overview &amp; Tech Stack</a><a href="#panel-B">B · System Architecture</a><a href="#panel-C">C · Collaborative Edit Flow</a><a href="#panel-D">D · Concurrency Engine &amp; OT Mechanics</a><a href="#panel-E">E · Authorization &amp; Access Control Waterfall</a><a href="#panel-F">F · Data Model &amp; Persistence Architecture</a><a href="#panel-G">G · Architectural Trade-Offs &amp; Edge Cases</a></nav><div class="am-doc-body">
+<section class="am-panel" id="panel-A">
+<header class="am-panel-head"><span class="am-panel-id">A</span><h2>System Overview &amp; Tech Stack</h2></header>
+<div class="am-panel-body"><dl class="am-kv" style="--kv-cols: 2"><div class="am-kv-cell am-kv-cell--wide"><dt>Core Purpose</dt><dd>Multi-user concurrent Markdown editing with live presence</dd></div><div class="am-kv-cell"><dt>Architecture</dt><dd>Go modular monolith + React SPA + PostgreSQL</dd></div><div class="am-kv-cell"><dt>Conflict Resolution</dt><dd>Centralized Operational Transformation (Jupiter model)</dd></div><div class="am-kv-cell"><dt>Backend Framework</dt><dd>Go 1.23+ with stdlib net/http and gorilla/websocket</dd></div><div class="am-kv-cell"><dt>Frontend Stack</dt><dd>React 19, TypeScript, CodeMirror 6, Zustand 5</dd></div><div class="am-kv-cell"><dt>Persistence</dt><dd>PostgreSQL 16 (Connection pool: 25 max, 5 idle)</dd></div><div class="am-kv-cell"><dt>Edge Proxy</dt><dd>Nginx 1.27 (Reverse proxy for /api and /ws in Docker Compose)</dd></div><div class="am-kv-cell"><dt>Auth &amp; Crypto</dt><dd>JWT (HS256) + bcrypt password hashing</dd></div></dl></div>
+</section>
+<section class="am-panel" id="panel-B">
+<header class="am-panel-head"><span class="am-panel-id">B</span><h2>System Architecture</h2></header>
+<div class="am-panel-body"><figure class="am-diagram am-flow"><svg viewBox="0 0 929 315" width="929" height="315" role="img" aria-label="流程图：Browser、Nginx、Router、WS、Auth、DB、OT、PostgreSQL" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g><rect class="am-cluster" x="428.2" y="26" width="337.1" height="262.8" rx="4"/><text class="am-cluster-label" x="436.2" y="40">Backend Monolith</text></g><g><g data-step="0"><path class="am-edge" d="M104.2,188.8 L145.7,188.8 Q187.2,188.8 228.8,188.8 L270.3,188.8" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="128.2" y="179.8" width="118.1" height="18" rx="3"/><text x="187.2" y="188.8" text-anchor="middle" dominant-baseline="central">HTTP &amp; WebSocket</text></g></g><g data-step="1"><path class="am-edge" d="M334.3,204.2 L357.8,215.5 Q381.2,226.8 404.7,226.8 Q428.2,226.8 439.7,226.8 L451.2,226.8" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="358.3" y="217.8" width="45.9" height="18" rx="3"/><text x="381.2" y="226.8" text-anchor="middle" dominant-baseline="central">/api/*</text></g></g><g data-step="2"><path class="am-edge" d="M316.7,171.3 L349,132.1 Q381.2,93 404.7,93 Q428.2,93 440.4,93 L452.7,93" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="364.8" y="84" width="32.8" height="18" rx="3"/><text x="381.2" y="93" text-anchor="middle" dominant-baseline="central">/ws</text></g></g><g data-step="3"><path class="am-edge" d="M518.2,231.6 L558.2,237.4 Q598.2,243.3 638.3,243.3 L678.3,243.3" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="559.4" y="234.3" width="77.6" height="18" rx="3"/><text x="598.2" y="243.3" text-anchor="middle" dominant-baseline="central">Authenticate</text></g></g><g data-step="4"><path class="am-edge" d="M518.2,210.7 L558.2,191.5 Q598.2,172.3 638.3,169.3 L678.3,166.4" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="559.2" y="163.3" width="78.1" height="18" rx="3"/><text x="598.2" y="172.3" text-anchor="middle" dominant-baseline="central">REST CRUD</text></g></g><g data-step="5"><path class="am-edge" d="M516.7,95.3 L557.4,98.3 Q598.2,101.3 638.3,98.3 L678.3,95.4" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="542.2" y="92.3" width="112.1" height="18" rx="3"/><text x="598.2" y="101.3" text-anchor="middle" dominant-baseline="central">Transform &amp; Apply</text></g></g><g data-step="6"><path class="am-edge" d="M516.7,84.6 L557.4,73.9 Q598.2,63.3 644.5,104.9 L690.8,146.5" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="548.4" y="54.3" width="99.7" height="18" rx="3"/><text x="598.2" y="63.3" text-anchor="middle" dominant-baseline="central">Snapshot &amp; Ops</text></g></g><g data-step="7"><path class="am-edge" d="M742.3,164 L753.8,164 Q765.3,164 776.8,164 Q788.3,164 799.8,164 L811.3,164" marker-end="url(#am1-arrow)"/></g></g><g><g class="am-node am-node--round" data-key="Browser" data-step="0"><rect class="am-node-shape" x="14" y="171.3" width="90.2" height="35" rx="17.5"/><text x="59.1" y="188.8" text-anchor="middle" dominant-baseline="central">Browser</text></g><g class="am-node am-node--rect" data-key="Nginx" data-step="0"><rect class="am-node-shape" x="270.3" y="171.3" width="64" height="35" rx="3"/><text x="302.3" y="188.8" text-anchor="middle" dominant-baseline="central">Nginx</text></g><g class="am-node am-node--rect" data-key="Router" data-step="1"><rect class="am-node-shape" x="451.2" y="209.3" width="67" height="35" rx="3"/><text x="484.7" y="226.8" text-anchor="middle" dominant-baseline="central">Router</text></g><g class="am-node am-node--rect" data-key="WS" data-step="2"><rect class="am-node-shape" x="452.7" y="75.5" width="64" height="35" rx="3"/><text x="484.7" y="93" text-anchor="middle" dominant-baseline="central">WS</text></g><g class="am-node am-node--rect" data-key="Auth" data-step="3"><rect class="am-node-shape" x="678.3" y="225.8" width="64" height="35" rx="3"/><text x="710.3" y="243.3" text-anchor="middle" dominant-baseline="central">Auth</text></g><g class="am-node am-node--rect" data-key="DB" data-step="4"><rect class="am-node-shape" x="678.3" y="146.5" width="64" height="35" rx="3"/><text x="710.3" y="164" text-anchor="middle" dominant-baseline="central">DB</text></g><g class="am-node am-node--rect" data-key="OT" data-step="5"><rect class="am-node-shape" x="678.3" y="75.5" width="64" height="35" rx="3"/><text x="710.3" y="93" text-anchor="middle" dominant-baseline="central">OT</text></g><g class="am-node am-node--db" data-key="PostgreSQL" data-step="7"><path class="am-node-shape" d="M811.3,146.5 A51.6,7 0 0 1 914.4,146.5 V181.5 A51.6,7 0 0 1 811.3,181.5 Z"/><path class="am-node-shape" d="M811.3,146.5 A51.6,7 0 0 0 914.4,146.5"/><text x="862.9" y="168" text-anchor="middle" dominant-baseline="central">PostgreSQL</text></g></g></svg></figure>
+<div class="am-md"><ul>
+<li><strong>Edge Proxy:</strong> Nginx 1.27 serves the React SPA and proxies REST traffic to <code>/api/*</code> and WebSocket connections to <code>/ws</code>.</li>
+<li><strong>Backend Monolith:</strong> A single Go binary runs the HTTP stdlib router, middleware pipeline (recovery, rate limiting, logging, CORS, body limits), WebSocket hub, and OT engine.</li>
+<li><strong>Data Layer:</strong> PostgreSQL 16 stores user accounts, room documents, membership grants, invite links, and operation logs.</li>
+</ul>
+</div></div>
+</section>
+<section class="am-panel" id="panel-C">
+<header class="am-panel-head"><span class="am-panel-id">C</span><h2>Collaborative Edit Flow</h2></header>
+<div class="am-panel-body"><figure class="am-diagram am-seq"><svg viewBox="0 0 959 466" width="959" height="466" role="img" aria-label="时序图：Editor、ClientOT、WebSocket、ServerHub、Peers、Database" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><line class="am-lifeline" x1="54" y1="42" x2="54" y2="462"/><g data-key="Editor"><rect class="am-actor" x="12" y="8" width="84" height="34" rx="2"/><text x="54" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">Editor</text></g><line class="am-lifeline" x1="212.8" y1="42" x2="212.8" y2="462"/><g data-key="ClientOT"><rect class="am-actor" x="170.8" y="8" width="84" height="34" rx="2"/><text x="212.8" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">ClientOT</text></g><line class="am-lifeline" x1="390.3" y1="42" x2="390.3" y2="462"/><g data-key="WebSocket"><rect class="am-actor" x="342.4" y="8" width="95.9" height="34" rx="2"/><text x="390.3" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">WebSocket</text></g><line class="am-lifeline" x1="530.9" y1="42" x2="530.9" y2="462"/><g data-key="ServerHub"><rect class="am-actor" x="485.7" y="8" width="90.4" height="34" rx="2"/><text x="530.9" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">ServerHub</text></g><line class="am-lifeline" x1="790" y1="42" x2="790" y2="462"/><g data-key="Peers"><rect class="am-actor" x="748" y="8" width="84" height="34" rx="2"/><text x="790" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">Peers</text></g><line class="am-lifeline" x1="903.5" y1="42" x2="903.5" y2="462"/><g data-key="Database"><rect class="am-actor" x="860" y="8" width="87" height="34" rx="2"/><text x="903.5" y="25" text-anchor="middle" dominant-baseline="central" font-weight="600">Database</text></g><g data-step="0"><text x="133.4" y="70" text-anchor="middle">Local keystroke edit</text><path class="am-edge" d="M54,80 L210.8,80" marker-end="url(#am2-arrow)"/><text class="am-step" x="60" y="74" text-anchor="start">1</text></g><g data-step="1"><text x="301.6" y="110" text-anchor="middle">sendOp(clientRev, ops)</text><path class="am-edge" d="M212.8,120 L388.3,120" marker-end="url(#am2-arrow)"/><text class="am-step" x="218.8" y="114" text-anchor="start">2</text></g><g data-step="2"><text x="460.6" y="150" text-anchor="middle">Message type=op</text><path class="am-edge" d="M390.3,160 L528.9,160" marker-end="url(#am2-arrow)"/><text class="am-step" x="396.3" y="154" text-anchor="start">3</text></g><g data-step="3"><text x="570.9" y="188" dominant-baseline="central">Validate CanWrite role</text><path class="am-edge" d="M530.9,184 H560.9 V204 H532.9" marker-end="url(#am2-arrow)"/><text class="am-step" x="536.9" y="194" text-anchor="start">4</text></g><g data-step="4"><text x="570.9" y="236" dominant-baseline="central">ApplyClientOps &amp; Transform</text><path class="am-edge" d="M530.9,232 H560.9 V252 H532.9" marker-end="url(#am2-arrow)"/><text class="am-step" x="536.9" y="242" text-anchor="start">5</text></g><g data-step="5"><text x="460.6" y="286" text-anchor="middle">ack(newRev)</text><path class="am-edge am-edge--dashed" d="M530.9,296 L392.3,296" marker-end="url(#am2-arrow)"/><text class="am-step" x="524.9" y="290" text-anchor="end">6</text></g><g data-step="6"><text x="660.5" y="326" text-anchor="middle">broadcast op(newRev, ops)</text><path class="am-edge" d="M530.9,336 L788,336" marker-end="url(#am2-arrow)"/><text class="am-step" x="536.9" y="330" text-anchor="start">7</text></g><g data-step="7"><text x="717.2" y="366" text-anchor="middle">Async save ops &amp; periodic snapshot</text><path class="am-edge" d="M530.9,376 L901.5,376" marker-end="url(#am2-arrow)"/><text class="am-step" x="536.9" y="370" text-anchor="start">8</text></g><g data-step="8"><rect class="am-note" x="510.9" y="400" width="412.6" height="44" rx="2"/><text x="717.2" y="414" text-anchor="middle" dominant-baseline="central" font-size="12">Ack sent to origin before DB write</text><text x="717.2" y="430" text-anchor="middle" dominant-baseline="central" font-size="12">completes</text></g></svg></figure>
+<div class="am-md"><ol>
+<li><strong>Local Mutation:</strong> CodeMirror captures input; <code>ClientOTState</code> diffs changes into atomic insert and delete operations.</li>
+<li><strong>Client State Machine:</strong> If synchronized, the client dispatches operations immediately. The client queues subsequent edits into a local buffer while awaiting server acknowledgement.</li>
+<li><strong>Server Transformation:</strong> Under mutex locking, <code>DocumentState</code> validates and transforms operations against the revision history.</li>
+<li><strong>Broadcast &amp; Ack:</strong> Origin receives an <code>ack</code> with the new revision; other active collaborators receive transformed operations.</li>
+<li><strong>Asynchronous Durability:</strong> Background goroutines persist operations and periodically snapshot document contents to PostgreSQL.</li>
+</ol>
+</div></div>
+</section>
+<section class="am-panel" id="panel-D">
+<header class="am-panel-head"><span class="am-panel-id">D</span><h2>Concurrency Engine &amp; OT Mechanics</h2></header>
+<div class="am-panel-body"><div class="am-tree"><div class="am-tree-root"><div class="am-tree-box am-tree-box--root" data-key="Centralized Operational Transformation" data-step="0">Centralized Operational Transformation</div></div><div class="am-tree-cols" style="--n: 3"><div class="am-tree-col"><div class="am-tree-box" data-key="Server Authority" data-step="1">Server Authority</div><ul class="am-tree-list"><li data-key="Monotonic Revision Number" data-step="2"><span class="am-tree-label">Monotonic Revision Number</span><span class="am-tree-sub">Single source of truth per room</span></li><li data-key="DocumentState Mutex" data-step="3"><span class="am-tree-label">DocumentState Mutex</span><span class="am-tree-sub">Serializes all concurrent operations</span></li><li data-key="History Ring Buffer" data-step="4"><span class="am-tree-label">History Ring Buffer</span><span class="am-tree-sub">Retains last 1,000 revisions for fast catchup</span></li></ul></div><div class="am-tree-col"><div class="am-tree-box" data-key="Rune Offset Mathematics" data-step="5">Rune Offset Mathematics</div><ul class="am-tree-list"><li data-key="Rune-based slicing" data-step="6"><span class="am-tree-label">Rune-based slicing</span><span class="am-tree-sub">Prevents UTF-8 and multibyte character splits</span></li><li data-key="Atomic Op Types" data-step="7"><span class="am-tree-label">Atomic Op Types</span><span class="am-tree-sub">Retain, Insert, Delete primitives</span></li></ul></div><div class="am-tree-col"><div class="am-tree-box" data-key="Client State Machine" data-step="8">Client State Machine</div><ul class="am-tree-list"><li data-key="Synchronized" data-step="9"><span class="am-tree-label">Synchronized</span><span class="am-tree-sub">Local doc matches server rev with no edits in flight</span></li><li data-key="AwaitingAck" data-step="10"><span class="am-tree-label">AwaitingAck</span><span class="am-tree-sub">One operation sent to server awaiting confirmation</span></li><li data-key="AwaitingWithBuffer" data-step="11"><span class="am-tree-label">AwaitingWithBuffer</span><span class="am-tree-sub">Additional keystrokes queued in local buffer</span></li></ul></div></div></div>
+<div class="am-md"><ul>
+<li><strong>Rune-Safe Indexing:</strong> The system calculates all operation offsets using Unicode runes (<code>[]rune</code> in Go, <code>Array.from</code> in TypeScript) to avoid splitting multibyte characters.</li>
+<li><strong>Centralized Revisioning:</strong> The server maintains an incremental <code>rev</code> counter per room. When client revisions lag behind, the server transforms incoming operations against missed history records.</li>
+<li><strong>In-Memory History:</strong> Server keeps the last 1,000 revisions in memory for instant incremental catch-up when clients reconnect.</li>
+</ul>
+</div></div>
+</section>
+<section class="am-panel" id="panel-E">
+<header class="am-panel-head"><span class="am-panel-id">E</span><h2>Authorization &amp; Access Control Waterfall</h2></header>
+<div class="am-panel-body"><div class="am-tree"><div class="am-tree-root"><div class="am-tree-box am-tree-box--root" data-key="Effective Role Evaluation" data-step="0">Effective Role Evaluation</div></div><div class="am-tree-cols" style="--n: 3"><div class="am-tree-col"><div class="am-tree-box" data-key="1. Room Creator Check" data-step="1">1. Room Creator Check<small>If user UID matches rooms.user_uid -&gt; OWNER</small></div></div><div class="am-tree-col"><div class="am-tree-box" data-key="2. Document Member Table" data-step="2">2. Document Member Table<small>If row exists in document_members -&gt; ASSIGNED ROLE</small></div></div><div class="am-tree-col"><div class="am-tree-box" data-key="3. Public Access Fallback" data-step="3">3. Public Access Fallback<small>Uses rooms.public_role (Default: EDITOR)</small></div></div></div></div>
+<div class="am-md"><ul>
+<li><strong>Role Levels:</strong> <code>owner</code> (full document deletion and member management), <code>editor</code> (read and write operations), and <code>viewer</code> (read-only real-time observation).</li>
+<li><strong>Public Default:</strong> Rooms default to <code>public_role = &#39;editor&#39;</code>, enabling instant link-based collaboration without authentication.</li>
+<li><strong>Invite System:</strong> Cryptographic UUID tokens provide role-based invitation links with optional expiration timestamps.</li>
+</ul>
+</div></div>
+</section>
+<section class="am-panel" id="panel-F">
+<header class="am-panel-head"><span class="am-panel-id">F</span><h2>Data Model &amp; Persistence Architecture</h2></header>
+<div class="am-panel-body"><div class="am-tree"><div class="am-tree-root am-tree-root--solo"><div class="am-tree-box am-tree-box--root" data-key="PostgreSQL Schema Architecture" data-step="0">PostgreSQL Schema Architecture</div></div><ul class="am-tree-list"><li data-key="`users`" data-step="1"><span class="am-tree-label"><code>users</code></span><span class="am-tree-sub">Accounts with bcrypt hashes, UUID identifiers, and timestamps</span></li><li data-key="`rooms`" data-step="2"><span class="am-tree-label"><code>rooms</code></span><span class="am-tree-sub">Document aggregates with markdown snapshots, current_rev, and public_role</span></li><li data-key="`document_members`" data-step="3"><span class="am-tree-label"><code>document_members</code></span><span class="am-tree-sub">Explicit per-document role grants (owner, editor, viewer)</span></li><li data-key="`room_invites`" data-step="4"><span class="am-tree-label"><code>room_invites</code></span><span class="am-tree-sub">Shareable link tokens with expiration timestamp</span></li><li data-key="`room_operations`" data-step="5"><span class="am-tree-label"><code>room_operations</code></span><span class="am-tree-sub">Append-only operation audit log with unique (room_id, rev)</span></li><li data-key="`schema_migrations`" data-step="6"><span class="am-tree-label"><code>schema_migrations</code></span><span class="am-tree-sub">Version tracking for embedded SQL migration files</span></li></ul></div>
+<div class="am-md"><ul>
+<li><strong>Hybrid Persistence:</strong> Real-time editing occurs in RAM inside <code>DocumentState</code>. The server flushes document snapshots to PostgreSQL every 10 revisions, every 30 seconds, upon room vacancy, or on graceful server shutdown.</li>
+<li><strong>Audit Logging:</strong> Background workers append operation records to <code>room_operations</code> for historical traceability.</li>
+</ul>
+</div></div>
+</section>
+<section class="am-panel" id="panel-G">
+<header class="am-panel-head"><span class="am-panel-id">G</span><h2>Architectural Trade-Offs &amp; Edge Cases</h2></header>
+<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Implementation</th>
+<th>Trade-Off &amp; Inherent Risk</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Scaling Boundary</td>
+<td>In-memory room manager</td>
+<td>Restricted to single-node deployments; no multi-replica sync</td>
+<td><span class="am-status am-status--warn"><span class="am-status-icon" aria-hidden="true">!</span>Single node</span></td>
+</tr>
+<tr>
+<td>Durability Model</td>
+<td>Async DB writes after in-memory ack</td>
+<td>Crash before snapshot flush can rewind revisions to last save</td>
+<td><span class="am-status am-status--warn"><span class="am-status-icon" aria-hidden="true">!</span>Async risk</span></td>
+</tr>
+<tr>
+<td>Ops Log Schema</td>
+<td>UNIQUE(room_id, rev) constraint</td>
+<td>Multi-op client batches drop subsequent operations in log</td>
+<td><span class="am-status am-status--warn"><span class="am-status-icon" aria-hidden="true">!</span>Partial logs</span></td>
+</tr>
+<tr>
+<td>Reconnect Recovery</td>
+<td>Full sync clears pending buffer</td>
+<td>Local unacknowledged offline edits get dropped on reset</td>
+<td><span class="am-status am-status--warn"><span class="am-status-icon" aria-hidden="true">!</span>Edit drop</span></td>
+</tr>
+<tr>
+<td>Public Security</td>
+<td>public_role defaults to editor</td>
+<td>Anonymous visitors can edit rooms by default unless changed</td>
+<td><span class="am-status am-status--warn"><span class="am-status-icon" aria-hidden="true">!</span>Permissive</span></td>
+</tr>
+<tr>
+<td>Edit Commutativity</td>
+<td>Strict rune-based pairwise transform</td>
+<td>Guarantees deterministic convergence across all peers</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>Convergent</span></td>
+</tr>
+<tr>
+<td>Connection Heartbeat</td>
+<td>Client ping every 25 seconds</td>
+<td>Cleanly detects severed TCP sockets and updates presence</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>Reliable</span></td>
+</tr>
+</tbody></table></div>
+</div></div>
+</section>
+</div>
+</div>
+</main>
+<footer class="am-colophon">Generated by Answer me with HTML 0.4.3 · 2026-10-04 10:58</footer>
+<textarea id="am-source" hidden readonly aria-hidden="true">---
+template: doc
+theme: blueprint
+mode: dark
+title: Peeriodic Architectural Deep Dive
+subtitle: Collaborative Real-Time Markdown Editor with Centralized Operational Transformation
+source: docs/ &amp; codebase inspection
+---
+
+```callout info System Summary
+Peeriodic is a real-time collaborative Markdown editor built with Go and React. It resolves concurrent edits with a centralized Operational Transformation engine. The architecture uses PostgreSQL for persistence and streams live presence over WebSockets.
+```
+
+## System Overview &amp; Tech Stack
+
+```kv cols=2
+* Core Purpose: Multi-user concurrent Markdown editing with live presence
+Architecture: Go modular monolith + React SPA + PostgreSQL
+Conflict Resolution: Centralized Operational Transformation (Jupiter model)
+Backend Framework: Go 1.23+ with stdlib net/http and gorilla/websocket
+Frontend Stack: React 19, TypeScript, CodeMirror 6, Zustand 5
+Persistence: PostgreSQL 16 (Connection pool: 25 max, 5 idle)
+Edge Proxy: Nginx 1.27 (Reverse proxy for /api and /ws in Docker Compose)
+Auth &amp; Crypto: JWT (HS256) + bcrypt password hashing
+```
+
+## System Architecture
+
+```flow LR
+(Browser) -&gt; Nginx: HTTP &amp; WebSocket
+Nginx -&gt; Router: /api/*
+Nginx -&gt; WS: /ws
+Router -&gt; Auth: Authenticate
+Router -&gt; DB: REST CRUD
+WS -&gt; OT: Transform &amp; Apply
+WS -&gt; DB: Snapshot &amp; Ops
+DB -&gt; [(PostgreSQL)]
+group Backend Monolith: Router, WS, OT, Auth, DB
+```
+
+- **Edge Proxy:** Nginx 1.27 serves the React SPA and proxies REST traffic to `/api/*` and WebSocket connections to `/ws`.
+- **Backend Monolith:** A single Go binary runs the HTTP stdlib router, middleware pipeline (recovery, rate limiting, logging, CORS, body limits), WebSocket hub, and OT engine.
+- **Data Layer:** PostgreSQL 16 stores user accounts, room documents, membership grants, invite links, and operation logs.
+
+## Collaborative Edit Flow
+
+```sequence num
+participants: Editor, ClientOT, WebSocket, ServerHub, Peers, Database
+Editor -&gt; ClientOT: Local keystroke edit
+ClientOT -&gt; WebSocket: sendOp(clientRev, ops)
+WebSocket -&gt; ServerHub: Message type=op
+ServerHub -&gt; ServerHub: Validate CanWrite role
+ServerHub -&gt; ServerHub: ApplyClientOps &amp; Transform
+ServerHub --&gt; WebSocket: ack(newRev)
+ServerHub -&gt; Peers: broadcast op(newRev, ops)
+ServerHub -&gt; Database: Async save ops &amp; periodic snapshot
+note ServerHub, Database: Ack sent to origin before DB write completes
+```
+
+1. **Local Mutation:** CodeMirror captures input; `ClientOTState` diffs changes into atomic insert and delete operations.
+2. **Client State Machine:** If synchronized, the client dispatches operations immediately. The client queues subsequent edits into a local buffer while awaiting server acknowledgement.
+3. **Server Transformation:** Under mutex locking, `DocumentState` validates and transforms operations against the revision history.
+4. **Broadcast &amp; Ack:** Origin receives an `ack` with the new revision; other active collaborators receive transformed operations.
+5. **Asynchronous Durability:** Background goroutines persist operations and periodically snapshot document contents to PostgreSQL.
+
+## Concurrency Engine &amp; OT Mechanics
+
+```tree
+Centralized Operational Transformation
+  Server Authority
+    Monotonic Revision Number | Single source of truth per room
+    DocumentState Mutex | Serializes all concurrent operations
+    History Ring Buffer | Retains last 1,000 revisions for fast catchup
+  Rune Offset Mathematics
+    Rune-based slicing | Prevents UTF-8 and multibyte character splits
+    Atomic Op Types | Retain, Insert, Delete primitives
+  Client State Machine
+    Synchronized | Local doc matches server rev with no edits in flight
+    AwaitingAck | One operation sent to server awaiting confirmation
+    AwaitingWithBuffer | Additional keystrokes queued in local buffer
+```
+
+- **Rune-Safe Indexing:** The system calculates all operation offsets using Unicode runes (`[]rune` in Go, `Array.from` in TypeScript) to avoid splitting multibyte characters.
+- **Centralized Revisioning:** The server maintains an incremental `rev` counter per room. When client revisions lag behind, the server transforms incoming operations against missed history records.
+- **In-Memory History:** Server keeps the last 1,000 revisions in memory for instant incremental catch-up when clients reconnect.
+
+## Authorization &amp; Access Control Waterfall
+
+```tree
+Effective Role Evaluation
+  1. Room Creator Check | If user UID matches rooms.user_uid -&gt; OWNER
+  2. Document Member Table | If row exists in document_members -&gt; ASSIGNED ROLE
+  3. Public Access Fallback | Uses rooms.public_role (Default: EDITOR)
+```
+
+- **Role Levels:** `owner` (full document deletion and member management), `editor` (read and write operations), and `viewer` (read-only real-time observation).
+- **Public Default:** Rooms default to `public_role = &#39;editor&#39;`, enabling instant link-based collaboration without authentication.
+- **Invite System:** Cryptographic UUID tokens provide role-based invitation links with optional expiration timestamps.
+
+## Data Model &amp; Persistence Architecture
+
+```tree list
+PostgreSQL Schema Architecture
+  `users` | Accounts with bcrypt hashes, UUID identifiers, and timestamps
+  `rooms` | Document aggregates with markdown snapshots, current_rev, and public_role
+  `document_members` | Explicit per-document role grants (owner, editor, viewer)
+  `room_invites` | Shareable link tokens with expiration timestamp
+  `room_operations` | Append-only operation audit log with unique (room_id, rev)
+  `schema_migrations` | Version tracking for embedded SQL migration files
+```
+
+- **Hybrid Persistence:** Real-time editing occurs in RAM inside `DocumentState`. The server flushes document snapshots to PostgreSQL every 10 revisions, every 30 seconds, upon room vacancy, or on graceful server shutdown.
+- **Audit Logging:** Background workers append operation records to `room_operations` for historical traceability.
+
+## Architectural Trade-Offs &amp; Edge Cases
+
+| Dimension | Implementation | Trade-Off &amp; Inherent Risk | Status |
+|---|---|---|---|
+| Scaling Boundary | In-memory room manager | Restricted to single-node deployments; no multi-replica sync | warn Single node |
+| Durability Model | Async DB writes after in-memory ack | Crash before snapshot flush can rewind revisions to last save | warn Async risk |
+| Ops Log Schema | UNIQUE(room_id, rev) constraint | Multi-op client batches drop subsequent operations in log | warn Partial logs |
+| Reconnect Recovery | Full sync clears pending buffer | Local unacknowledged offline edits get dropped on reset | warn Edit drop |
+| Public Security | public_role defaults to editor | Anonymous visitors can edit rooms by default unless changed | warn Permissive |
+| Edit Commutativity | Strict rune-based pairwise transform | Guarantees deterministic convergence across all peers | ok Convergent |
+| Connection Heartbeat | Client ping every 25 seconds | Cleanly detects severed TCP sockets and updates presence | ok Reliable |
+
+</textarea>
+<script>
+(() => {
+  const root = document.documentElement;
+  const cycle = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
+  const label = (btn, value) => {
+    const map = JSON.parse(btn.dataset.labels || '{}');
+    btn.textContent = map[value] || value;
+  };
+  const bind = (name, attr, values) => {
+    const btn = document.querySelector(`[data-am="${name}"]`);
+    if (!btn) return;
+    label(btn, root.getAttribute(attr));
+    btn.addEventListener('click', () => {
+      const next = cycle(values, root.getAttribute(attr));
+      root.setAttribute(attr, next);
+      label(btn, next);
+    });
+  };
+  bind('theme', 'data-theme', ['blueprint', 'shadcn']);
+  bind('mode', 'data-mode', ['auto', 'light', 'dark']);
+
+  const copyBtn = document.querySelector('[data-am="copy"]');
+  copyBtn?.addEventListener('click', async () => {
+    const text = document.getElementById('am-source').value;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = Object.assign(document.createElement('textarea'), { value: text });
+      document.body.append(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    const original = copyBtn.textContent;
+    copyBtn.textContent = copyBtn.dataset.done;
+    setTimeout(() => { copyBtn.textContent = original; }, 1400);
+  });
+})();
+</script>
+</body>
+</html>

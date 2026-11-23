@@ -3,7 +3,7 @@ import { StorageService } from './utils/storage';
 import { UrlUtils } from './utils/url';
 import apiService from './services/api';
 import { User } from './types';
-import Home from './components/Home';
+import Dashboard from './components/Dashboard';
 import Editor from './components/Editor';
 import AuthModal from './components/AuthModal';
 import './App.css';
@@ -49,21 +49,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleCreateRoom = useCallback(() => {
-    const roomId = UrlUtils.generateRoomId();
-    UrlUtils.setRoomIdInUrl(roomId);
-    setCurrentRoomId(roomId);
-    setRoomName('New Room');
-  }, []);
-
-  const handleRoomClick = useCallback((roomId: string) => {
-    UrlUtils.setRoomIdInUrl(roomId);
-    setCurrentRoomId(roomId);
-    const savedRooms = StorageService.getRooms();
-    const matchedRoom = savedRooms.find(room => room.id === roomId);
-    setRoomName(matchedRoom?.title || 'Shared Room');
-  }, []);
-
   const handleBackToHome = useCallback(() => {
     UrlUtils.removeRoomIdFromUrl();
     setCurrentRoomId(null);
@@ -107,9 +92,14 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       <main className="main-content">
         {!currentRoomId ? (
-          <Home
-            onCreateRoom={handleCreateRoom}
-            onRoomClick={handleRoomClick}
+          <Dashboard
+            currentUser={currentUser}
+            onOpenRoom={(id, title) => {
+              UrlUtils.setRoomIdInUrl(id);
+              setCurrentRoomId(id);
+              setRoomName(title);
+            }}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         ) : (
           <Editor

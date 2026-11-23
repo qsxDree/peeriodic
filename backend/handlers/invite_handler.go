@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -15,15 +14,15 @@ import (
 
 // InviteHandler handles room invitations, sharing flows, and membership roles
 type InviteHandler struct {
-	dbService   *services.DatabaseService
-	authService *services.AuthService
+	dbService *services.DatabaseService
+	wsService *services.WebSocketService
 }
 
 // NewInviteHandler creates a new InviteHandler instance
-func NewInviteHandler(dbService *services.DatabaseService, authService *services.AuthService) *InviteHandler {
+func NewInviteHandler(dbService *services.DatabaseService, wsService *services.WebSocketService) *InviteHandler {
 	return &InviteHandler{
-		dbService:   dbService,
-		authService: authService,
+		dbService: dbService,
+		wsService: wsService,
 	}
 }
 
@@ -35,7 +34,7 @@ func (ih *InviteHandler) HandleCreateInvite(w http.ResponseWriter, r *http.Reque
 	}
 
 	userUID := middleware.GetUserUID(r.Context())
-	role, err := ih.dbService.GetEffectiveRole(roomID, userUID)
+	role, err := ih.dbService.GetEffectiveRole(r.Context(), roomID, userUID)
 	if err != nil {
 		utils.NotFound(w, "Room not found")
 		return
@@ -47,11 +46,21 @@ func (ih *InviteHandler) HandleCreateInvite(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req models.CreateInviteRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := utils.DecodeJSON(w, r, &req); err != nil {
+		return
+	}
 
 	targetRole := strings.ToLower(strings.TrimSpace(req.Role))
-	if targetRole != services.RoleEditor && targetRole != services.RoleViewer {
+	if targetRole == "" {
 		targetRole = services.RoleEditor
+	}
+	if targetRole != services.RoleEditor && targetRole != services.RoleViewer {
+		utils.BadRequest(w, "Role must be 'editor' or 'viewer'")
+		return
+	}
+	if req.ExpiresInHours < 0 || req.ExpiresInHours > 8760 {
+		utils.BadRequest(w, "Invite expiry must be between 0 and 8760 hours")
+		return
 	}
 
 	var expiresAt *time.Time
@@ -66,7 +75,7 @@ func (ih *InviteHandler) HandleCreateInvite(w http.ResponseWriter, r *http.Reque
 		createdBy = &userUID
 	}
 
-	invite, err := ih.dbService.CreateRoomInvite(roomID, token, targetRole, createdBy, expiresAt)
+	invite, err := ih.dbService.CreateRoomInvite(r.Context(), roomID, token, targetRole, createdBy, expiresAt)
 	if err != nil {
 		utils.InternalServerError(w, "Failed to create room invite")
 		return
@@ -90,13 +99,13 @@ func (ih *InviteHandler) HandleAcceptInvite(w http.ResponseWriter, r *http.Reque
 
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	// Expected: /api/invites/:token/accept -> len >= 4
-	if len(pathParts) < 4 {
+	if len(pathParts) != 4 || pathParts[3] != "accept" {
 		utils.BadRequest(w, "Invalid invite acceptance URL")
 		return
 	}
 	token := pathParts[2]
 
-	room, grantedRole, err := ih.dbService.AcceptRoomInvite(token, userUID)
+	room, grantedRole, err := ih.dbService.AcceptRoomInvite(r.Context(), token, userUID)
 	if err != nil {
 		utils.BadRequest(w, err.Error())
 		return
@@ -118,7 +127,7 @@ func (ih *InviteHandler) HandleMembers(w http.ResponseWriter, r *http.Request, r
 	switch r.Method {
 	case http.MethodGet:
 		userUID := middleware.GetUserUID(r.Context())
-		role, err := ih.dbService.GetEffectiveRole(roomID, userUID)
+		role, err := ih.dbService.GetEffectiveRole(r.Context(), roomID, userUID)
 		if err != nil {
 			utils.NotFound(w, "Room not found")
 			return
@@ -129,7 +138,7 @@ func (ih *InviteHandler) HandleMembers(w http.ResponseWriter, r *http.Request, r
 			return
 		}
 
-		members, err := ih.dbService.ListRoomMembers(roomID)
+		members, err := ih.dbService.ListRoomMembers(r.Context(), roomID)
 		if err != nil {
 			utils.InternalServerError(w, "Failed to list room members")
 			return
@@ -145,9 +154,13 @@ func (ih *InviteHandler) HandleMembers(w http.ResponseWriter, r *http.Request, r
 // HandleMemberOperations handles updating or removing a member in a room
 func (ih *InviteHandler) HandleMemberOperations(w http.ResponseWriter, r *http.Request, roomID, targetUID string) {
 	userUID := middleware.GetUserUID(r.Context())
-	currentRole, err := ih.dbService.GetEffectiveRole(roomID, userUID)
+	currentRole, err := ih.dbService.GetEffectiveRole(r.Context(), roomID, userUID)
 	if err != nil {
 		utils.NotFound(w, "Room not found")
+		return
+	}
+	if services.CanAdmin(currentRole) && userUID == targetUID {
+		utils.Forbidden(w, "The owner cannot be removed or demoted")
 		return
 	}
 
@@ -160,8 +173,7 @@ func (ih *InviteHandler) HandleMemberOperations(w http.ResponseWriter, r *http.R
 		}
 
 		var req models.UpdateMemberRoleRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			utils.BadRequest(w, "Invalid request body")
+		if err := utils.DecodeJSON(w, r, &req); err != nil {
 			return
 		}
 
@@ -171,10 +183,11 @@ func (ih *InviteHandler) HandleMemberOperations(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		if err := ih.dbService.UpdateRoomMemberRole(roomID, targetUID, newRole); err != nil {
+		if err := ih.dbService.UpdateRoomMemberRole(r.Context(), roomID, targetUID, newRole); err != nil {
 			utils.InternalServerError(w, "Failed to update member role")
 			return
 		}
+		ih.wsService.CloseRoomConnections(roomID, targetUID)
 
 		utils.SuccessResponse(w, map[string]string{
 			"status":   "updated",
@@ -190,10 +203,11 @@ func (ih *InviteHandler) HandleMemberOperations(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		if err := ih.dbService.RemoveRoomMember(roomID, targetUID); err != nil {
+		if err := ih.dbService.RemoveRoomMember(r.Context(), roomID, targetUID); err != nil {
 			utils.InternalServerError(w, "Failed to remove member")
 			return
 		}
+		ih.wsService.CloseRoomConnections(roomID, targetUID)
 
 		utils.SuccessResponse(w, map[string]string{
 			"status":   "removed",

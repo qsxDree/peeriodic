@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,74 +12,67 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/logoes0/peeriodic.git/config"
+	"github.com/logoes0/peeriodic.git/logger"
+	"github.com/logoes0/peeriodic.git/migrations"
 	"github.com/logoes0/peeriodic.git/routers"
 	"github.com/logoes0/peeriodic.git/services"
 )
 
 func main() {
-	// Load environment variables
-	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️  .env file not found, using system environment variables")
+	if err := run(); err != nil {
+		logger.Error("Server stopped", "error", err)
+		os.Exit(1)
 	}
+}
 
-	// Load configuration
+func run() error {
+	_ = godotenv.Load(".env", "../.env")
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("❌ Failed to load configuration: %v", err)
+		return err
 	}
-
-	// Initialize database service
-	dbService, err := services.NewDatabaseService(cfg)
+	logger.Init(cfg.Log.Format, cfg.Log.Level)
+	db, err := services.NewDatabaseService(cfg)
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize database service: %v", err)
+		return err
 	}
-	defer func() {
-		if err := dbService.Close(); err != nil {
-			log.Printf("⚠️  Failed to close database connection: %v", err)
+	defer db.Close()
+	if cfg.Migrations.AutoMigrate {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = migrations.NewRunner(db.GetDB()).ApplyAll(ctx)
+		cancel()
+		if err != nil {
+			return err
 		}
-	}()
-
-	// Initialize auth service
-	authService := services.NewAuthService(cfg)
-
-	// Initialize WebSocket service
-	wsService := services.NewWebSocketService(cfg, authService)
-
-	// Initialize router
-	router := routers.NewRouter(dbService, wsService, authService)
-	router.SetupRoutes()
-
-	// Create HTTP server
+	}
+	auth := services.NewAuthService(cfg)
+	ws := services.NewWebSocketService(cfg, auth)
+	router := routers.NewRouter(db, ws, auth)
 	server := &http.Server{
-		Addr:         cfg.GetServerAddress(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr: cfg.GetServerAddress(), Handler: router.SetupRoutes(),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
-
-	// Start server in a goroutine
-	go func() {
-		log.Printf("🚀 Server starting on %s", cfg.GetServerAddress())
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Server failed to start: %v", err)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+	logger.Info("Server listening", "addr", server.Addr)
+	select {
+	case <-ctx.Done():
+	case err = <-serverErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			err = fmt.Errorf("HTTP server: %w", err)
 		}
-	}()
-
-	// Wait for interrupt signal to gracefully shutdown the server
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Println("🛑 Shutting down server...")
-
-	// Create a deadline for server shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Attempt graceful shutdown
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("⚠️  Server forced to shutdown: %v", err)
 	}
-
-	log.Println("✅ Server exited gracefully")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	wsErr := ws.Shutdown(shutdownCtx)
+	httpErr := server.Shutdown(shutdownCtx)
+	if httpErr != nil {
+		_ = server.Close()
+	}
+	logger.Info("Server shutdown complete")
+	return errors.Join(err, wsErr, httpErr)
 }

@@ -99,17 +99,15 @@ func (as *AuthService) ValidateToken(tokenString string) (*Claims, error) {
 	claims := &Claims{}
 
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
 		return []byte(as.config.Auth.JWTSecret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer("peeriodic"), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
-	if !token.Valid {
+	if !token.Valid || claims.UID == "" || claims.Subject != claims.UID {
 		return nil, errors.New("token is not valid")
 	}
 

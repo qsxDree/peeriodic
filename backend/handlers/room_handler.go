@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -14,12 +14,14 @@ import (
 // RoomHandler handles room-related HTTP requests
 type RoomHandler struct {
 	DBService *services.DatabaseService
+	wsService *services.WebSocketService
 }
 
 // NewRoomHandler creates a new room handler instance
-func NewRoomHandler(dbService *services.DatabaseService) *RoomHandler {
+func NewRoomHandler(dbService *services.DatabaseService, wsService *services.WebSocketService) *RoomHandler {
 	return &RoomHandler{
 		DBService: dbService,
+		wsService: wsService,
 	}
 }
 
@@ -58,30 +60,31 @@ func (rh *RoomHandler) HandleRooms(w http.ResponseWriter, r *http.Request) {
 // handleGetRooms retrieves rooms for a specific user
 func (rh *RoomHandler) handleGetRooms(w http.ResponseWriter, r *http.Request) {
 	uid := r.URL.Query().Get("uid")
-	if uid == "" {
-		uid = middleware.GetUserUID(r.Context())
-	}
-
-	if uid == "" {
-		utils.BadRequest(w, "Missing uid parameter")
+	authUID := middleware.GetUserUID(r.Context())
+	if authUID == "" {
+		utils.Unauthorized(w, "Authentication required")
 		return
 	}
+	if uid != "" && uid != authUID {
+		utils.Forbidden(w, "Cannot list another user's rooms")
+		return
+	}
+	uid = authUID
 
-	rooms, err := rh.DBService.GetRoomsByUser(uid)
+	rooms, err := rh.DBService.GetRoomsByUser(r.Context(), uid)
 	if err != nil {
 		utils.InternalServerError(w, "Failed to retrieve rooms")
 		return
 	}
 
 	// Convert to response format
-	var response []RoomResponse
+	response := make([]RoomResponse, 0, len(rooms))
 	for _, room := range rooms {
-		role, _ := rh.DBService.GetEffectiveRole(room.ID, uid)
 		roomResponse := RoomResponse{
 			ID:         room.ID,
 			Title:      room.Title,
 			CurrentRev: room.CurrentRev,
-			Role:       role,
+			Role:       room.Role,
 			PublicRole: room.PublicRole,
 			CreatedAt:  room.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		}
@@ -97,11 +100,20 @@ func (rh *RoomHandler) handleGetRooms(w http.ResponseWriter, r *http.Request) {
 // handleCreateRoom creates a new room
 func (rh *RoomHandler) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	var req CreateRoomRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := utils.DecodeJSON(w, r, &req); err != nil {
+		return
+	}
 
 	authUID := middleware.GetUserUID(r.Context())
-	if authUID != "" {
-		req.UID = authUID
+	if req.UID != "" && req.UID != authUID {
+		utils.Forbidden(w, "Cannot create a room for another user")
+		return
+	}
+	req.UID = authUID
+	req.Title = strings.TrimSpace(req.Title)
+	if len([]rune(req.Title)) > 255 {
+		utils.BadRequest(w, "Title must be at most 255 characters")
+		return
 	}
 
 	if req.Title == "" {
@@ -111,13 +123,10 @@ func (rh *RoomHandler) handleCreateRoom(w http.ResponseWriter, r *http.Request) 
 	var userUID *string
 	if req.UID != "" {
 		userUID = &req.UID
-		if req.Email != "" {
-			_, _ = rh.DBService.EnsureUserExists(req.UID, req.Email, req.Name)
-		}
 	}
 
 	roomID := uuid.New().String()
-	room, err := rh.DBService.CreateRoom(roomID, req.Title, userUID)
+	room, err := rh.DBService.CreateRoom(r.Context(), roomID, req.Title, userUID)
 	if err != nil {
 		utils.InternalServerError(w, "Failed to create room")
 		return
@@ -127,11 +136,12 @@ func (rh *RoomHandler) handleCreateRoom(w http.ResponseWriter, r *http.Request) 
 		ID:         room.ID,
 		Title:      room.Title,
 		CurrentRev: room.CurrentRev,
-		Role:       services.RoleOwner,
+		Role:       services.RoleEditor,
 		PublicRole: room.PublicRole,
 	}
 	if room.UserUID != nil {
 		response.UserUID = *room.UserUID
+		response.Role = services.RoleOwner
 	}
 
 	utils.SuccessResponse(w, response)
@@ -156,9 +166,9 @@ func (rh *RoomHandler) HandleRoomByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	room, err := rh.DBService.GetRoom(roomID)
+	room, err := rh.DBService.GetRoom(r.Context(), roomID)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, services.ErrNotFound) {
 			utils.NotFound(w, "Room not found")
 		} else {
 			utils.InternalServerError(w, "Failed to retrieve room")
@@ -168,8 +178,8 @@ func (rh *RoomHandler) HandleRoomByID(w http.ResponseWriter, r *http.Request) {
 
 	// Check access permissions
 	userUID := middleware.GetUserUID(r.Context())
-	role, err := rh.DBService.GetEffectiveRole(roomID, userUID)
-	if err != nil || role == services.RoleNone {
+	role, err := rh.DBService.GetEffectiveRole(r.Context(), roomID, userUID)
+	if err != nil || !services.CanRead(role) {
 		utils.Forbidden(w, "Access denied to this document")
 		return
 	}
@@ -209,15 +219,15 @@ func (rh *RoomHandler) HandleDeleteRoom(w http.ResponseWriter, r *http.Request) 
 	}
 
 	userUID := middleware.GetUserUID(r.Context())
-	role, err := rh.DBService.GetEffectiveRole(roomID, userUID)
+	role, err := rh.DBService.GetEffectiveRole(r.Context(), roomID, userUID)
 	if err != nil || !services.CanAdmin(role) {
 		utils.Forbidden(w, "Only the document owner can delete this room")
 		return
 	}
 
-	err = rh.DBService.DeleteRoom(roomID)
+	err = rh.DBService.DeleteRoom(r.Context(), roomID)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, services.ErrNotFound) {
 			utils.NotFound(w, "Room not found")
 		} else {
 			utils.InternalServerError(w, "Failed to delete room")
@@ -225,5 +235,6 @@ func (rh *RoomHandler) HandleDeleteRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	rh.wsService.CloseRoomConnections(roomID, "")
+	utils.SuccessResponse(w, map[string]string{"status": "deleted"})
 }

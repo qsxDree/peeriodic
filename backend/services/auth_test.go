@@ -1,7 +1,9 @@
 package services
 
 import (
+	"github.com/golang-jwt/jwt/v5"
 	"testing"
+	"time"
 
 	"github.com/logoes0/peeriodic.git/config"
 )
@@ -105,5 +107,34 @@ func TestRoleHelpers(t *testing.T) {
 	}
 	if CanRead(RoleNone) {
 		t.Error("none should not have read access")
+	}
+}
+
+func TestJWTRejectsInvalidClaimsAndAlgorithms(t *testing.T) {
+	cfg := &config.Config{Auth: config.AuthConfig{JWTSecret: "test-secret", TokenExpiryHours: 1}}
+	auth := NewAuthService(cfg)
+	for _, tc := range []struct {
+		name   string
+		change func(*Claims)
+		method jwt.SigningMethod
+	}{
+		{"missing expiry", func(c *Claims) { c.ExpiresAt = nil }, jwt.SigningMethodHS256},
+		{"expired", func(c *Claims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute)) }, jwt.SigningMethodHS256},
+		{"wrong issuer", func(c *Claims) { c.Issuer = "other" }, jwt.SigningMethodHS256},
+		{"missing UID", func(c *Claims) { c.UID = "" }, jwt.SigningMethodHS256},
+		{"mismatched subject", func(c *Claims) { c.Subject = "another-user" }, jwt.SigningMethodHS256},
+		{"wrong algorithm", func(c *Claims) {}, jwt.SigningMethodHS384},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := &Claims{UID: "user", RegisteredClaims: jwt.RegisteredClaims{Subject: "user", Issuer: "peeriodic", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}}
+			tc.change(claims)
+			token, err := jwt.NewWithClaims(tc.method, claims).SignedString([]byte(cfg.Auth.JWTSecret))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = auth.ValidateToken(token); err == nil {
+				t.Fatal("invalid token accepted")
+			}
+		})
 	}
 }

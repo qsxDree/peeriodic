@@ -1,11 +1,10 @@
 package handlers
 
 import (
-	"encoding/json"
-	"log"
+	"errors"
 	"net/http"
-	"strings"
 
+	"github.com/logoes0/peeriodic.git/logger"
 	"github.com/logoes0/peeriodic.git/middleware"
 	"github.com/logoes0/peeriodic.git/services"
 	"github.com/logoes0/peeriodic.git/utils"
@@ -14,18 +13,20 @@ import (
 // DocumentHandler handles document-related HTTP requests
 type DocumentHandler struct {
 	dbService *services.DatabaseService
+	wsService *services.WebSocketService
 }
 
 // NewDocumentHandler creates a new document handler instance
-func NewDocumentHandler(dbService *services.DatabaseService) *DocumentHandler {
+func NewDocumentHandler(dbService *services.DatabaseService, wsService *services.WebSocketService) *DocumentHandler {
 	return &DocumentHandler{
 		dbService: dbService,
+		wsService: wsService,
 	}
 }
 
 // SaveDocumentRequest represents the request body for saving a document
 type SaveDocumentRequest struct {
-	Content string `json:"content"`
+	Content *string `json:"content"`
 }
 
 // SaveDocumentResponse represents the response for saving a document
@@ -51,77 +52,38 @@ func (dh *DocumentHandler) HandleSave(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req SaveDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.BadRequest(w, "Invalid request body")
+	if err := utils.DecodeJSON(w, r, &req); err != nil {
 		return
 	}
-
-	// Validate content
-	if req.Content == "" {
-		utils.BadRequest(w, "Content cannot be empty")
+	if req.Content == nil {
+		utils.BadRequest(w, "Content is required")
 		return
 	}
 
 	// Check write permissions
 	userUID := middleware.GetUserUID(r.Context())
-	role, err := dh.dbService.GetEffectiveRole(roomID, userUID)
+	role, err := dh.dbService.GetEffectiveRole(r.Context(), roomID, userUID)
 	if err != nil || !services.CanWrite(role) {
 		utils.Forbidden(w, "You have read-only (viewer) access to this document")
 		return
 	}
 
 	// Save document to database
-	log.Printf("Saving document for room %s, content length: %d", roomID, len(req.Content))
-	err = dh.dbService.UpdateRoomContent(roomID, req.Content)
+	err = dh.wsService.SaveDocument(r.Context(), dh.dbService, roomID, *req.Content)
+	if errors.Is(err, services.ErrConflict) {
+		utils.ErrorResponse(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
-		log.Printf("Failed to save document for room %s: %v", roomID, err)
+		logger.Error("Failed to save document", "room_id", roomID, "error", err)
 		utils.InternalServerError(w, "Failed to save document")
 		return
 	}
-	log.Printf("Successfully saved document for room %s", roomID)
 
 	response := SaveDocumentResponse{
 		Status:        "success",
 		RoomID:        roomID,
-		ContentLength: len(req.Content),
-	}
-
-	utils.SuccessResponse(w, response)
-}
-
-// HandleGetDocument handles retrieving a document
-func (dh *DocumentHandler) HandleGetDocument(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		utils.MethodNotAllowed(w)
-		return
-	}
-
-	// Extract room ID from URL path
-	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
-		utils.BadRequest(w, "Invalid room ID")
-		return
-	}
-	roomID := pathParts[3]
-
-	if roomID == "" {
-		utils.BadRequest(w, "Missing room ID")
-		return
-	}
-
-	room, err := dh.dbService.GetRoom(roomID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			utils.NotFound(w, "Room not found")
-		} else {
-			utils.InternalServerError(w, "Failed to retrieve document")
-		}
-		return
-	}
-
-	response := map[string]string{
-		"id":      room.ID,
-		"content": room.Content,
+		ContentLength: len(*req.Content),
 	}
 
 	utils.SuccessResponse(w, response)

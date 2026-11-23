@@ -24,6 +24,7 @@ class WebSocketService {
   private currentOptions: ConnectOptions | null = null;
   private status: ConnectionStatus = 'disconnected';
   private pingInterval: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
   getStatus(): ConnectionStatus {
     return this.status;
@@ -34,17 +35,36 @@ class WebSocketService {
     this.statusHandlers.forEach(handler => handler(newStatus));
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
   connect(roomId: string, options?: ConnectOptions): Promise<void> {
+    // If already connected or connecting to the same room, do not reconnect
+    if (this.socket && this.currentRoomId === roomId && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+      return Promise.resolve();
+    }
+
     this.currentRoomId = roomId;
     if (options) {
       this.currentOptions = options;
     }
 
+    this.clearReconnectTimer();
+
     return new Promise((resolve, reject) => {
       try {
         if (this.socket) {
-          this.socket.close();
+          const oldSocket = this.socket;
           this.socket = null;
+          oldSocket.onopen = null;
+          oldSocket.onmessage = null;
+          oldSocket.onerror = null;
+          oldSocket.onclose = null;
+          oldSocket.close();
         }
 
         this.setStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
@@ -52,7 +72,9 @@ class WebSocketService {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.hostname;
         const port = '5000';
-        let wsUrl = `${protocol}//${host}:${port}/ws?room=${encodeURIComponent(roomId)}`;
+        const defaultBase = `${protocol}//${host}:${port}/ws`;
+        const wsBase = process.env.REACT_APP_WS_URL || defaultBase;
+        let wsUrl = `${wsBase}?room=${encodeURIComponent(roomId)}`;
 
         if (this.currentOptions?.name) {
           wsUrl += `&name=${encodeURIComponent(this.currentOptions.name)}`;
@@ -67,17 +89,21 @@ class WebSocketService {
         }
 
         console.log('🔌 Connecting to WebSocket:', wsUrl);
-        this.socket = new WebSocket(wsUrl);
+        const socket = new WebSocket(wsUrl);
+        this.socket = socket;
 
-        this.socket.onopen = () => {
+        socket.onopen = () => {
+          if (this.socket !== socket) return;
           console.log('✅ WebSocket connected to room:', roomId);
           this.reconnectAttempts = 0;
+          this.clearReconnectTimer();
           this.setStatus('connected');
           this.startHeartbeat();
           resolve();
         };
 
-        this.socket.onmessage = (event) => {
+        socket.onmessage = (event) => {
+          if (this.socket !== socket) return;
           try {
             const message: WebSocketMessage = JSON.parse(event.data);
             this.messageHandlers.forEach(handler => handler(message));
@@ -86,9 +112,11 @@ class WebSocketService {
           }
         };
 
-        this.socket.onclose = (event) => {
+        socket.onclose = (event) => {
+          if (this.socket !== socket) return;
           console.log('❌ WebSocket closed:', event.code, event.reason);
           this.stopHeartbeat();
+          this.socket = null;
           if (this.currentRoomId === roomId) {
             this.handleReconnect(roomId);
           } else {
@@ -96,7 +124,8 @@ class WebSocketService {
           }
         };
 
-        this.socket.onerror = (error) => {
+        socket.onerror = (error) => {
+          if (this.socket !== socket) return;
           console.error('⚠️ WebSocket error:', error);
           this.errorHandlers.forEach(handler => handler(error));
           reject(error);
@@ -109,13 +138,15 @@ class WebSocketService {
   }
 
   private handleReconnect(roomId: string) {
+    this.clearReconnectTimer();
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       this.setStatus('reconnecting');
       const delay = Math.min(this.baseReconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), 10000);
       console.log(`🔄 Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
 
-      setTimeout(() => {
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
         if (this.currentRoomId === roomId) {
           this.connect(roomId, this.currentOptions || undefined).catch(error => {
             console.error('❌ Reconnection failed:', error);
@@ -142,15 +173,32 @@ class WebSocketService {
     }
   }
 
+  reconnect() {
+    if (this.currentRoomId) {
+      this.reconnectAttempts = 0;
+      this.clearReconnectTimer();
+      this.connect(this.currentRoomId, this.currentOptions || undefined).catch((err) => {
+        console.error('Manual reconnect failed:', err);
+      });
+    }
+  }
+
   disconnect() {
     this.stopHeartbeat();
+    this.clearReconnectTimer();
+    this.currentRoomId = null;
+    this.currentOptions = null;
+    this.reconnectAttempts = 0;
     if (this.socket) {
-      this.socket.close();
+      const oldSocket = this.socket;
       this.socket = null;
-      this.currentRoomId = null;
-      this.currentOptions = null;
-      this.setStatus('disconnected');
+      oldSocket.onopen = null;
+      oldSocket.onmessage = null;
+      oldSocket.onerror = null;
+      oldSocket.onclose = null;
+      oldSocket.close();
     }
+    this.setStatus('disconnected');
   }
 
   send(message: WebSocketMessage) {

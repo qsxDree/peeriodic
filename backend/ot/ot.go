@@ -80,11 +80,7 @@ func Apply(doc string, op Operation) (string, error) {
 		return string(newRunes), nil
 
 	case OpDelete:
-		end := op.Pos + op.Len
-		if end > docLen {
-			// Clamp deletion to document length if necessary
-			end = docLen
-		}
+		end := op.Pos + min(op.Len, docLen-op.Pos)
 		if op.Pos > end {
 			return doc, fmt.Errorf("%w: delete start %d > end %d", ErrIndexOutOfBounds, op.Pos, end)
 		}
@@ -215,18 +211,4 @@ func TransformOps(opsA []Operation, opsB []Operation, priorityA bool) []Operatio
 	}
 
 	return resA
-}
-
-func min(x, y int) int {
-	if x < y {
-		return x
-	}
-	return y
-}
-
-func max(x, y int) int {
-	if x > y {
-		return x
-	}
-	return y
 }

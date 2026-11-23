@@ -43,6 +43,7 @@ export interface Room {
   public_role?: Role;
   user_uid?: string;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface CreateRoomRequest {
@@ -103,6 +104,8 @@ export interface CursorPosition {
   pos: number;
   sel_start: number;
   sel_end: number;
+  line?: number;
+  ch?: number;
 }
 
 export interface UserPresence {

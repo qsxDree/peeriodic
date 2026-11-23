@@ -1,19 +1,22 @@
 package services
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
+	"errors"
 	"fmt"
-	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/logoes0/peeriodic.git/config"
+	"github.com/logoes0/peeriodic.git/logger"
 	"github.com/logoes0/peeriodic.git/models"
 	"github.com/logoes0/peeriodic.git/ot"
+	"github.com/logoes0/peeriodic.git/utils"
 )
 
 var clientColors = []string{
@@ -22,485 +25,410 @@ var clientColors = []string{
 	"#4CAF50", "#8BC34A", "#FF9800", "#795548",
 }
 
-// ClientSession represents a connected user in a room
 type ClientSession struct {
-	Conn      *websocket.Conn
-	ClientID  string
-	UID       string
-	Name      string
-	Color     string
-	Role      string
-	Cursor    *models.CursorPosition
-	writeMu   sync.Mutex
-	Connected time.Time
+	Conn        *websocket.Conn
+	ClientID    string
+	UID         string
+	Name        string
+	Color       string
+	Role        string
+	Cursor      *models.CursorPosition
+	Connected   time.Time
+	writeMu     sync.Mutex
+	expiresAt   time.Time
+	initialized bool
 }
 
-// SendMessage safely writes a message to this client's WebSocket connection
 func (cs *ClientSession) SendMessage(msg models.Message) error {
 	cs.writeMu.Lock()
 	defer cs.writeMu.Unlock()
 	if cs.Conn == nil {
 		return nil
 	}
-	return cs.Conn.WriteJSON(msg)
+	if !cs.initialized && msg.Type != models.MsgTypeInit {
+		return nil
+	}
+	cs.initialized = true
+	if err := cs.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	if err := cs.Conn.WriteJSON(msg); err != nil {
+		_ = cs.Conn.Close()
+		return err
+	}
+	return nil
 }
 
-// RoomManager manages clients and collaborative document state for a specific room
 type RoomManager struct {
-	ID        string
-	Clients   map[*websocket.Conn]*ClientSession
-	DocState  *ot.DocumentState
-	mu        sync.RWMutex
-	lastSaved time.Time
+	ID       string
+	Clients  map[*websocket.Conn]*ClientSession
+	DocState *ot.DocumentState
+	mu       sync.RWMutex
+	// Keep revision commits, acknowledgements and broadcasts in the same order.
+	opMu sync.Mutex
 }
 
-// WebSocketService handles WebSocket connections and real-time collaboration
+// shortcut: rooms are coordinated in one process; add shared coordination before running multiple replicas.
 type WebSocketService struct {
 	config      *config.Config
 	authService *AuthService
 	rooms       map[string]*RoomManager
 	mu          sync.RWMutex
+	stopping    bool
+	clients     sync.WaitGroup
 }
 
-// NewWebSocketService creates a new WebSocket service instance
 func NewWebSocketService(cfg *config.Config, authService *AuthService) *WebSocketService {
 	if authService == nil {
 		authService = NewAuthService(cfg)
 	}
-	return &WebSocketService{
-		config:      cfg,
-		authService: authService,
-		rooms:       make(map[string]*RoomManager),
-	}
+	return &WebSocketService{config: cfg, authService: authService, rooms: make(map[string]*RoomManager)}
 }
 
-// GetUpgrader returns a configured WebSocket upgrader
 func (ws *WebSocketService) GetUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{
-		ReadBufferSize:  ws.config.WebSocket.ReadBufferSize,
-		WriteBufferSize: ws.config.WebSocket.WriteBufferSize,
+		ReadBufferSize:   ws.config.WebSocket.ReadBufferSize,
+		WriteBufferSize:  ws.config.WebSocket.WriteBufferSize,
+		HandshakeTimeout: 5 * time.Second,
 		CheckOrigin: func(r *http.Request) bool {
-			return true
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			parsed, err := url.Parse(origin)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return false
+			}
+			if strings.EqualFold(parsed.Host, r.Host) {
+				return true
+			}
+			for _, allowed := range ws.config.WebSocket.AllowedOrigins {
+				if strings.EqualFold(origin, allowed) {
+					return true
+				}
+			}
+			return false
 		},
-		EnableCompression: true,
 	}
 }
 
-// HandleConnection handles a new WebSocket connection with auth & role checking
-func (ws *WebSocketService) HandleConnection(w http.ResponseWriter, r *http.Request, dbService *DatabaseService) {
-	log.Printf("🌐 WebSocket request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			log.Printf("❌ PANIC in WebSocket handler: %v", rec)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-	}()
-
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	w.Header().Set("Access-Control-Max-Age", "86400")
-
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
+func (ws *WebSocketService) HandleConnection(w http.ResponseWriter, r *http.Request, db *DatabaseService) {
+	ws.mu.RLock()
+	stopping := ws.stopping
+	ws.mu.RUnlock()
+	if stopping {
+		utils.ErrorResponse(w, http.StatusServiceUnavailable, "Server is shutting down")
 		return
 	}
-
+	if r.Method != http.MethodGet {
+		utils.MethodNotAllowed(w)
+		return
+	}
 	roomID := r.URL.Query().Get("room")
-	if roomID == "" {
-		log.Printf("❌ WebSocket connection attempt without room ID")
-		http.Error(w, "Missing room ID", http.StatusBadRequest)
+	if roomID == "" || len(roomID) > 255 {
+		utils.BadRequest(w, "Invalid room ID")
 		return
 	}
-
-	// 1. Authenticate user from query parameter or header
+	userUID, userName := "", r.URL.Query().Get("name")
 	token := r.URL.Query().Get("token")
-	if token == "" {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-				token = strings.TrimSpace(parts[1])
-			}
-		}
-	}
-
-	userUID := r.URL.Query().Get("uid")
-	userName := r.URL.Query().Get("name")
-
-	if token != "" && ws.authService != nil {
-		if claims, err := ws.authService.ValidateToken(token); err == nil {
-			userUID = claims.UID
-			userName = claims.Name
-		}
-	}
-
-	// 2. Determine effective role and verify read permission
-	role := RoleEditor
-	if dbService != nil {
-		effectiveRole, err := dbService.GetEffectiveRole(roomID, userUID)
-		if err == nil {
-			role = effectiveRole
-		}
-	}
-
-	if role == RoleNone {
-		log.Printf("❌ Access denied for user %s on room %s", userUID, roomID)
-		http.Error(w, "Access denied to this document", http.StatusForbidden)
-		return
-	}
-
-	// 3. Ensure room exists in database
-	var initialContent string
-	var currentRev int
-	if dbService != nil {
-		room, err := dbService.EnsureRoomExists(roomID)
-		if err != nil {
-			log.Printf("❌ Failed to ensure room exists: %v", err)
-			http.Error(w, "Database error", http.StatusInternalServerError)
+	if header := r.Header.Get("Authorization"); header != "" {
+		parts := strings.Fields(header)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			utils.Unauthorized(w, "Invalid authorization header")
 			return
 		}
-		initialContent = room.Content
-		currentRev = room.CurrentRev
+		token = parts[1]
 	}
-
+	var expiresAt time.Time
+	if token != "" {
+		claims, err := ws.authService.ValidateToken(token)
+		if err != nil {
+			utils.Unauthorized(w, "Invalid or expired token")
+			return
+		}
+		userUID, userName = claims.UID, claims.Name
+		expiresAt = claims.ExpiresAt.Time
+	}
 	upgrader := ws.GetUpgrader()
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("❌ WebSocket upgrade failed for room %s: %v", roomID, err)
-		http.Error(w, "WebSocket upgrade failed", http.StatusInternalServerError)
+	if !websocket.IsWebSocketUpgrade(r) {
+		utils.BadRequest(w, "WebSocket upgrade required")
 		return
 	}
+	if !upgrader.CheckOrigin(r) {
+		utils.Forbidden(w, "Origin is not allowed")
+		return
+	}
+	role := RoleEditor
+	if db != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		effectiveRole, err := db.GetEffectiveRole(ctx, roomID, userUID)
+		// Guest documents are created locally by the existing frontend.
+		if errors.Is(err, ErrNotFound) && userUID == "" {
+			if err = db.EnsureGuestRoom(ctx, roomID); err == nil {
+				effectiveRole, err = db.GetEffectiveRole(ctx, roomID, userUID)
+			}
+		}
+		cancel()
+		if errors.Is(err, ErrNotFound) {
+			utils.NotFound(w, "Room not found")
+			return
+		}
+		if err != nil {
+			utils.InternalServerError(w, "Failed to check document access")
+			return
+		}
+		role = effectiveRole
+	}
+	if !CanRead(role) {
+		utils.Forbidden(w, "Access denied to this document")
+		return
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.SetReadLimit(1024 * 1024)
 
-	// Get or create room manager
-	roomManager := ws.getOrCreateRoom(roomID, initialContent, currentRev)
-
-	// Create client session
-	clientID := generateRandomID(8)
+	clientID := uuid.NewString()
 	if userName == "" {
 		userName = fmt.Sprintf("User-%s", clientID[:4])
 	}
-	colorIndex := time.Now().UnixNano() % int64(len(clientColors))
-	session := &ClientSession{
-		Conn:      conn,
-		ClientID:  clientID,
-		UID:       userUID,
-		Name:      userName,
-		Color:     clientColors[colorIndex],
-		Role:      role,
-		Connected: time.Now(),
+	if len([]rune(userName)) > 255 {
+		userName = string([]rune(userName)[:255])
 	}
+	session := &ClientSession{Conn: conn, ClientID: clientID, UID: userUID, Name: userName,
+		Color: clientColors[time.Now().UnixNano()%int64(len(clientColors))], Role: role,
+		Connected: time.Now(), expiresAt: expiresAt}
 
-	// Register client in room
-	roomManager.mu.Lock()
-	roomManager.Clients[conn] = session
-	clientCount := len(roomManager.Clients)
-	presenceList := roomManager.getPresenceListUnsafe()
-	content, rev := roomManager.DocState.GetSnapshot()
-	roomManager.mu.Unlock()
-
-	log.Printf("✅ Client %s (%s, role: %s) connected to room %s (total clients: %d)", clientID, userName, role, roomID, clientCount)
-	defer ws.closeConnection(conn, roomID, dbService)
-
-	// Send initial state to the newly connected client
-	initMsg := models.Message{
-		Type:     models.MsgTypeInit,
-		Rev:      rev,
-		Data:     content,
-		ClientID: clientID,
-		Name:     userName,
-		Color:    session.Color,
-		Role:     session.Role,
-		Presence: presenceList,
-	}
-	if err := session.SendMessage(initMsg); err != nil {
-		log.Printf("❌ Failed to send initial state to %s: %v", clientID, err)
+	// Registration and removal share one lock so reconnects cannot join an evicted room.
+	ws.mu.Lock()
+	if ws.stopping {
+		ws.mu.Unlock()
 		return
 	}
+	room := ws.rooms[roomID]
+	if room == nil {
+		content, rev := "", 0
+		if db != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			stored, loadErr := db.GetRoom(ctx, roomID)
+			cancel()
+			if loadErr != nil {
+				ws.mu.Unlock()
+				return
+			}
+			content, rev = stored.Content, stored.CurrentRev
+		}
+		room = newRoomManager(roomID, content, rev)
+		ws.rooms[roomID] = room
+	}
+	room.mu.Lock()
+	room.Clients[conn] = session
+	room.mu.Unlock()
+	ws.clients.Add(1)
+	ws.mu.Unlock()
+	defer ws.clients.Done()
+	defer ws.closeConnection(conn, roomID)
 
-	// Broadcast presence update to others in room
-	roomManager.Broadcast(models.Message{
-		Type:     models.MsgTypePresence,
-		Presence: presenceList,
-	}, conn)
-
-	// Handle incoming messages
-	ws.handleMessages(session, roomManager, dbService)
+	room.opMu.Lock()
+	content, rev := room.DocState.GetSnapshot()
+	presence := room.GetPresenceList()
+	err = session.SendMessage(models.Message{Type: models.MsgTypeInit, Rev: rev, Data: content,
+		ClientID: clientID, Name: userName, Color: session.Color, Role: role, Presence: presence})
+	if err == nil {
+		room.Broadcast(models.Message{Type: models.MsgTypePresence, Presence: presence}, conn)
+	}
+	room.opMu.Unlock()
+	if err != nil {
+		return
+	}
+	ws.handleMessages(r.Context(), session, room, db)
 }
 
-// handleMessages processes incoming WebSocket messages from a client
-func (ws *WebSocketService) handleMessages(session *ClientSession, roomManager *RoomManager, dbService *DatabaseService) {
+func (ws *WebSocketService) handleMessages(ctx context.Context, session *ClientSession, room *RoomManager, db *DatabaseService) {
 	conn := session.Conn
-	roomID := roomManager.ID
-
 	for {
+		deadline := time.Now().Add(90 * time.Second)
+		if !session.expiresAt.IsZero() && session.expiresAt.Before(deadline) {
+			deadline = session.expiresAt
+		}
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return
+		}
 		var msg models.Message
 		if err := conn.ReadJSON(&msg); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("❌ Client %s disconnected unexpectedly from room %s: %v", session.ClientID, roomID, err)
-			} else {
-				log.Printf("📖 Client %s disconnected normally from room %s", session.ClientID, roomID)
-			}
-			break
+			return
 		}
-
+		if !session.expiresAt.IsZero() && !time.Now().Before(session.expiresAt) {
+			return
+		}
+		if db != nil && msg.Type != models.MsgTypeOp && msg.Type != models.MsgTypeUpdate {
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			role, err := db.GetEffectiveRole(checkCtx, room.ID, session.UID)
+			cancel()
+			if err != nil || !CanRead(role) {
+				return
+			}
+		}
 		switch msg.Type {
 		case models.MsgTypeOp:
-			ws.handleOpMessage(session, roomManager, msg, dbService)
-
+			ws.handleOpMessage(ctx, session, room, msg, db)
 		case models.MsgTypeCursor:
-			if msg.Cursor != nil {
+			if msg.Cursor != nil && msg.Cursor.Pos >= 0 && msg.Cursor.SelStart >= 0 && msg.Cursor.SelEnd >= 0 {
+				room.mu.Lock()
 				session.Cursor = msg.Cursor
-				// Broadcast cursor position to all other peers
-				roomManager.Broadcast(models.Message{
-					Type:     models.MsgTypeCursor,
-					ClientID: session.ClientID,
-					Name:     session.Name,
-					Color:    session.Color,
-					Role:     session.Role,
-					Cursor:   session.Cursor,
-				}, conn)
+				reply := models.Message{Type: models.MsgTypeCursor, ClientID: session.ClientID,
+					Name: session.Name, Color: session.Color, Role: session.Role, Cursor: session.Cursor}
+				room.mu.Unlock()
+				room.Broadcast(reply, conn)
 			}
-
 		case models.MsgTypePresence:
-			if msg.Name != "" {
+			room.mu.Lock()
+			if msg.Name != "" && len([]rune(msg.Name)) <= 255 {
 				session.Name = msg.Name
 			}
-			if msg.Color != "" {
+			if len(msg.Color) == 7 && msg.Color[0] == '#' && strings.Trim(msg.Color[1:], "0123456789abcdefABCDEF") == "" {
 				session.Color = msg.Color
 			}
-			presenceList := roomManager.GetPresenceList()
-			roomManager.Broadcast(models.Message{
-				Type:     models.MsgTypePresence,
-				Presence: presenceList,
-			}, nil)
-
+			presence := room.getPresenceListUnsafe()
+			room.mu.Unlock()
+			room.Broadcast(models.Message{Type: models.MsgTypePresence, Presence: presence}, nil)
 		case models.MsgTypeSync:
-			ws.handleSyncRequest(session, roomManager, msg.Rev)
-
+			ws.handleSyncRequest(session, room)
 		case models.MsgTypePing:
 			_ = session.SendMessage(models.Message{Type: models.MsgTypePong})
-
-		// Backward compatibility for raw document replace
 		case models.MsgTypeUpdate:
-			ws.handleLegacyDocumentUpdate(session, roomManager, msg.Data, dbService)
-
+			ws.handleLegacyDocumentUpdate(ctx, session, room, msg.Data, db)
 		default:
-			log.Printf("⚠️ Unknown message type '%s' from client %s in room %s", msg.Type, session.ClientID, roomID)
+			_ = session.SendMessage(models.Message{Type: models.MsgTypeError, Data: "Unknown message type"})
 		}
 	}
 }
 
-// handleOpMessage processes an OT operation from a client
-func (ws *WebSocketService) handleOpMessage(session *ClientSession, roomManager *RoomManager, msg models.Message, dbService *DatabaseService) {
-	// Enforce role-based editing permissions: Viewers cannot edit!
-	if !CanWrite(session.Role) {
-		log.Printf("⚠️ Rejecting edit from viewer %s in room %s", session.ClientID, roomManager.ID)
-		_ = session.SendMessage(models.Message{
-			Type: models.MsgTypeError,
-			Data: "You have read-only access (viewer) to this document",
-		})
+func (ws *WebSocketService) handleOpMessage(ctx context.Context, session *ClientSession, room *RoomManager, msg models.Message, db *DatabaseService) {
+	room.opMu.Lock()
+	defer room.opMu.Unlock()
+	role := session.Role
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if db != nil {
+		var err error
+		role, err = db.GetEffectiveRole(ctx, room.ID, session.UID)
+		if err != nil {
+			_ = session.SendMessage(models.Message{Type: models.MsgTypeError, Data: "Failed to check editing permission"})
+			return
+		}
+	}
+	if !CanWrite(role) {
+		_ = session.SendMessage(models.Message{Type: models.MsgTypeError, Data: "You have read-only access to this document"})
 		return
 	}
-
-	if len(msg.Ops) == 0 {
-		return
+	var persist func(string, int, []ot.Operation) error
+	if db != nil {
+		persist = func(content string, rev int, ops []ot.Operation) error {
+			return db.SaveRoomRevision(ctx, room.ID, content, rev, session.ClientID, ops)
+		}
 	}
-
-	newRev, transformedOps, err := roomManager.DocState.ApplyClientOps(msg.Rev, session.ClientID, msg.Ops, true)
+	newRev, ops, err := room.DocState.ApplyClientOpsAndPersist(msg.Rev, session.ClientID, msg.Ops, true, persist)
 	if err != nil {
-		log.Printf("⚠️ OT error for client %s in room %s: %v", session.ClientID, roomManager.ID, err)
-		// Request full resync
-		content, rev := roomManager.DocState.GetSnapshot()
-		_ = session.SendMessage(models.Message{
-			Type:  models.MsgTypeSync,
-			Rev:   rev,
-			Data:  content,
-			Color: "resync_required",
-		})
-		return
-	}
-
-	// 1. Send Ack to the submitting client
-	_ = session.SendMessage(models.Message{
-		Type: models.MsgTypeAck,
-		Rev:  newRev,
-	})
-
-	// 2. Broadcast transformed operation to all peers
-	roomManager.Broadcast(models.Message{
-		Type:     models.MsgTypeOp,
-		Rev:      newRev,
-		ClientID: session.ClientID,
-		Ops:      transformedOps,
-	}, session.Conn)
-
-	// 3. Persist operation asynchronously
-	if dbService != nil {
-		go func() {
-			for _, op := range transformedOps {
-				if err := dbService.SaveOperation(roomManager.ID, newRev, session.ClientID, string(op.Type), op.Pos, op.Text, op.Len); err != nil {
-					log.Printf("⚠️ Failed to persist operation in room %s: %v", roomManager.ID, err)
-				}
-			}
-
-			// Save snapshot periodically or when rev is a multiple of 10
-			if newRev%10 == 0 || time.Since(roomManager.lastSaved) > 30*time.Second {
-				content, rev := roomManager.DocState.GetSnapshot()
-				if err := dbService.UpdateRoomContentAndRev(roomManager.ID, content, rev); err != nil {
-					log.Printf("⚠️ Failed to update room snapshot %s: %v", roomManager.ID, err)
-				} else {
-					roomManager.lastSaved = time.Now()
-				}
-			}
-		}()
-	}
-}
-
-// handleSyncRequest handles a client resync request
-func (ws *WebSocketService) handleSyncRequest(session *ClientSession, roomManager *RoomManager, clientRev int) {
-	records, err := roomManager.DocState.GetOpsSince(clientRev)
-	if err == nil && len(records) > 0 {
-		// Client is within recent history buffer, send missing ops
-		var opsToSend []ot.Operation
-		for _, rec := range records {
-			opsToSend = append(opsToSend, rec.Ops...)
-		}
-		_, currentRev := roomManager.DocState.GetSnapshot()
-		_ = session.SendMessage(models.Message{
-			Type: models.MsgTypeSync,
-			Rev:  currentRev,
-			Ops:  opsToSend,
-		})
-		return
-	}
-
-	// Client is too far behind or on mismatch: send full snapshot
-	content, currentRev := roomManager.DocState.GetSnapshot()
-	_ = session.SendMessage(models.Message{
-		Type: models.MsgTypeSync,
-		Rev:  currentRev,
-		Data: content,
-	})
-}
-
-// handleLegacyDocumentUpdate maintains backwards compatibility with raw string updates
-func (ws *WebSocketService) handleLegacyDocumentUpdate(session *ClientSession, roomManager *RoomManager, content string, dbService *DatabaseService) {
-	if !CanWrite(session.Role) {
-		_ = session.SendMessage(models.Message{
-			Type: models.MsgTypeError,
-			Data: "You have read-only access (viewer) to this document",
-		})
-		return
-	}
-
-	oldContent, currentRev := roomManager.DocState.GetSnapshot()
-	if content == oldContent {
-		return
-	}
-
-	// Synthesize a delete and insert op
-	var ops []ot.Operation
-	oldLen := len([]rune(oldContent))
-	if oldLen > 0 {
-		ops = append(ops, ot.Operation{
-			Type: ot.OpDelete,
-			Pos:  0,
-			Len:  oldLen,
-		})
-	}
-	if len(content) > 0 {
-		ops = append(ops, ot.Operation{
-			Type: ot.OpInsert,
-			Pos:  0,
-			Text: content,
-		})
-	}
-
-	ws.handleOpMessage(session, roomManager, models.Message{
-		Rev: currentRev,
-		Ops: ops,
-	}, dbService)
-}
-
-// getOrCreateRoom returns an existing room manager or creates a new one
-func (ws *WebSocketService) getOrCreateRoom(roomID, initialContent string, initialRev int) *RoomManager {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	if room, exists := ws.rooms[roomID]; exists {
-		return room
-	}
-
-	room := &RoomManager{
-		ID:        roomID,
-		Clients:   make(map[*websocket.Conn]*ClientSession),
-		DocState:  ot.NewDocumentState(initialContent, initialRev),
-		lastSaved: time.Now(),
-	}
-	ws.rooms[roomID] = room
-	return room
-}
-
-// closeConnection removes a client from the room and cleans up
-func (ws *WebSocketService) closeConnection(conn *websocket.Conn, roomID string, dbService *DatabaseService) {
-	conn.Close()
-
-	ws.mu.RLock()
-	room, exists := ws.rooms[roomID]
-	ws.mu.RUnlock()
-
-	if !exists {
-		return
-	}
-
-	room.mu.Lock()
-	session, hadSession := room.Clients[conn]
-	delete(room.Clients, conn)
-	remainingClients := len(room.Clients)
-	presenceList := room.getPresenceListUnsafe()
-	room.mu.Unlock()
-
-	if hadSession {
-		log.Printf("Client %s disconnected from room %s (%d clients remaining)", session.ClientID, roomID, remainingClients)
-	}
-
-	// Broadcast updated presence to remaining clients
-	room.Broadcast(models.Message{
-		Type:     models.MsgTypePresence,
-		Presence: presenceList,
-	}, nil)
-
-	// Persist snapshot if room is now empty
-	if remainingClients == 0 {
+		logger.Warn("Document operation rejected", "room_id", room.ID, "error", err)
 		content, rev := room.DocState.GetSnapshot()
-		if dbService != nil {
-			_ = dbService.UpdateRoomContentAndRev(roomID, content, rev)
-		}
+		_ = session.SendMessage(models.Message{Type: models.MsgTypeSync, Rev: rev, Data: content, Color: "resync_required"})
+		return
+	}
+	_ = session.SendMessage(models.Message{Type: models.MsgTypeAck, Rev: newRev})
+	room.Broadcast(models.Message{Type: models.MsgTypeOp, Rev: newRev, ClientID: session.ClientID, Ops: ops}, session.Conn)
+}
 
-		ws.mu.Lock()
-		delete(ws.rooms, roomID)
+func (ws *WebSocketService) handleSyncRequest(session *ClientSession, room *RoomManager) {
+	room.opMu.Lock()
+	defer room.opMu.Unlock()
+	// A snapshot keeps revision and content consistent, including empty documents.
+	content, rev := room.DocState.GetSnapshot()
+	_ = session.SendMessage(models.Message{Type: models.MsgTypeSync, Rev: rev, Data: content})
+}
+
+func (ws *WebSocketService) handleLegacyDocumentUpdate(ctx context.Context, session *ClientSession, room *RoomManager, content string, db *DatabaseService) {
+	old, rev := room.DocState.GetSnapshot()
+	if old == content {
+		return
+	}
+	ws.handleOpMessage(ctx, session, room, models.Message{Rev: rev, Ops: replacementOps(old, content)}, db)
+}
+
+func replacementOps(old, content string) []ot.Operation {
+	var ops []ot.Operation
+	if old != "" {
+		ops = append(ops, ot.Operation{Type: ot.OpDelete, Pos: 0, Len: len([]rune(old))})
+	}
+	if content != "" {
+		ops = append(ops, ot.Operation{Type: ot.OpInsert, Pos: 0, Text: content})
+	}
+	return ops
+}
+
+// SaveDocument prevents an HTTP snapshot from overwriting active collaborators.
+func (ws *WebSocketService) SaveDocument(ctx context.Context, db *DatabaseService, roomID, content string) error {
+	ws.mu.Lock()
+	if room := ws.rooms[roomID]; room != nil {
 		ws.mu.Unlock()
-		log.Printf("Room %s cleaned up and persisted (no clients remaining)", roomID)
+		room.opMu.Lock()
+		defer room.opMu.Unlock()
+		current, _ := room.DocState.GetSnapshot()
+		if current != content {
+			return ErrConflict
+		}
+		return nil
 	}
+	defer ws.mu.Unlock()
+	stored, err := db.GetRoom(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	if stored.Content == content {
+		return nil
+	}
+	return db.SaveRoomRevision(ctx, roomID, content, stored.CurrentRev+1, "http", replacementOps(stored.Content, content))
 }
 
-// Broadcast sends a message to all clients in the room except optional excluded connection
-func (rm *RoomManager) Broadcast(message models.Message, excludeConn *websocket.Conn) {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
+func newRoomManager(id, content string, rev int) *RoomManager {
+	return &RoomManager{ID: id, Clients: make(map[*websocket.Conn]*ClientSession), DocState: ot.NewDocumentState(content, rev)}
+}
 
+func (ws *WebSocketService) closeConnection(conn *websocket.Conn, roomID string) {
+	_ = conn.Close()
+	ws.mu.Lock()
+	room := ws.rooms[roomID]
+	if room == nil {
+		ws.mu.Unlock()
+		return
+	}
+	room.mu.Lock()
+	delete(room.Clients, conn)
+	presence := room.getPresenceListUnsafe()
+	if len(room.Clients) == 0 {
+		delete(ws.rooms, roomID)
+	}
+	room.mu.Unlock()
+	ws.mu.Unlock()
+	room.Broadcast(models.Message{Type: models.MsgTypePresence, Presence: presence}, nil)
+}
+
+func (rm *RoomManager) Broadcast(message models.Message, exclude *websocket.Conn) {
+	rm.mu.RLock()
+	sessions := make([]*ClientSession, 0, len(rm.Clients))
 	for conn, session := range rm.Clients {
-		if conn != excludeConn {
-			if err := session.SendMessage(message); err != nil {
-				log.Printf("⚠️ Failed to broadcast to client %s: %v", session.ClientID, err)
-			}
+		if conn != exclude {
+			sessions = append(sessions, session)
 		}
 	}
+	rm.mu.RUnlock()
+	for _, session := range sessions {
+		_ = session.SendMessage(message)
+	}
 }
 
-// GetPresenceList returns list of connected users in room
 func (rm *RoomManager) GetPresenceList() []models.UserPresence {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -511,34 +439,70 @@ func (rm *RoomManager) getPresenceListUnsafe() []models.UserPresence {
 	list := make([]models.UserPresence, 0, len(rm.Clients))
 	for _, session := range rm.Clients {
 		list = append(list, models.UserPresence{
-			ClientID:    session.ClientID,
-			UID:         session.UID,
-			Name:        session.Name,
-			Color:       session.Color,
-			Role:        session.Role,
-			Cursor:      session.Cursor,
-			ConnectedAt: session.Connected,
-		})
+			ClientID: session.ClientID, UID: session.UID, Name: session.Name, Color: session.Color,
+			Role: session.Role, Cursor: session.Cursor, ConnectedAt: session.Connected})
 	}
 	return list
 }
 
-// GetRoomStats returns active rooms and their client counts
 func (ws *WebSocketService) GetRoomStats() map[string]int {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
-
-	stats := make(map[string]int)
-	for roomID, room := range ws.rooms {
+	stats := make(map[string]int, len(ws.rooms))
+	for id, room := range ws.rooms {
 		room.mu.RLock()
-		stats[roomID] = len(room.Clients)
+		stats[id] = len(room.Clients)
 		room.mu.RUnlock()
 	}
 	return stats
 }
 
-func generateRandomID(length int) string {
-	b := make([]byte, length/2+1)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)[:length]
+func (ws *WebSocketService) Shutdown(ctx context.Context) error {
+	ws.mu.Lock()
+	ws.stopping = true
+	var connections []*websocket.Conn
+	for _, room := range ws.rooms {
+		room.mu.RLock()
+		for conn := range room.Clients {
+			connections = append(connections, conn)
+		}
+		room.mu.RUnlock()
+	}
+	ws.mu.Unlock()
+	closeMessage := websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server is shutting down")
+	for _, conn := range connections {
+		deadline := time.Now().Add(time.Second)
+		if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+			deadline = limit
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, closeMessage, deadline)
+		_ = conn.Close()
+	}
+	done := make(chan struct{})
+	go func() { ws.clients.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// CloseRoomConnections applies membership changes immediately; an empty UID closes everyone.
+func (ws *WebSocketService) CloseRoomConnections(roomID, userUID string) {
+	ws.mu.RLock()
+	var connections []*websocket.Conn
+	if room := ws.rooms[roomID]; room != nil {
+		room.mu.RLock()
+		for conn, session := range room.Clients {
+			if userUID == "" || session.UID == userUID {
+				connections = append(connections, conn)
+			}
+		}
+		room.mu.RUnlock()
+	}
+	ws.mu.RUnlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }

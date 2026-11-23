@@ -16,11 +16,12 @@ type RevisionRecord struct {
 
 // DocumentState manages in-memory document state, revisions, and operation history
 type DocumentState struct {
-	mu         sync.RWMutex
-	Content    string
-	Rev        int
-	History    []RevisionRecord
-	MaxHistory int
+	mu           sync.RWMutex
+	Content      string
+	Rev          int
+	History      []RevisionRecord
+	MaxHistory   int
+	historyBytes int
 }
 
 // NewDocumentState initializes document state with initial content and revision
@@ -37,11 +38,19 @@ func NewDocumentState(initialContent string, initialRev int) *DocumentState {
 // If the client's revision is behind the server's current revision, the operations are
 // transformed against all intermediate operations in history.
 func (ds *DocumentState) ApplyClientOps(clientRev int, clientID string, ops []Operation, priority bool) (int, []Operation, error) {
+	return ds.ApplyClientOpsAndPersist(clientRev, clientID, ops, priority, nil)
+}
+
+// ApplyClientOpsAndPersist commits durable state before publishing a revision in memory.
+func (ds *DocumentState) ApplyClientOpsAndPersist(clientRev int, clientID string, ops []Operation, priority bool, persist func(string, int, []Operation) error) (int, []Operation, error) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	if clientRev > ds.Rev {
+	if clientRev < 0 || clientRev > ds.Rev {
 		return ds.Rev, nil, fmt.Errorf("%w: client rev %d is ahead of server rev %d", ErrRevisionMismatch, clientRev, ds.Rev)
+	}
+	if len(ops) == 0 || len(ops) > 256 {
+		return ds.Rev, nil, fmt.Errorf("%w: batch must contain between 1 and 256 operations", ErrInvalidOp)
 	}
 
 	for _, op := range ops {
@@ -72,6 +81,14 @@ func (ds *DocumentState) ApplyClientOps(clientRev int, clientID string, ops []Op
 	if err != nil {
 		return ds.Rev, nil, fmt.Errorf("failed to apply transformed ops: %w", err)
 	}
+	if len(newContent) > 1024*1024 {
+		return ds.Rev, nil, fmt.Errorf("%w: document exceeds 1 MiB", ErrInvalidOp)
+	}
+	if persist != nil {
+		if err := persist(newContent, ds.Rev+1, transformedOps); err != nil {
+			return ds.Rev, nil, err
+		}
+	}
 
 	ds.Content = newContent
 	ds.Rev++
@@ -84,9 +101,15 @@ func (ds *DocumentState) ApplyClientOps(clientRev int, clientID string, ops []Op
 	}
 
 	ds.History = append(ds.History, record)
-	if len(ds.History) > ds.MaxHistory {
-		// Prune oldest history
-		ds.History = ds.History[len(ds.History)-ds.MaxHistory:]
+	for _, op := range transformedOps {
+		ds.historyBytes += len(op.Text)
+	}
+	for len(ds.History) > ds.MaxHistory || ds.historyBytes > 4*1024*1024 {
+		for _, op := range ds.History[0].Ops {
+			ds.historyBytes -= len(op.Text)
+		}
+		ds.History[0] = RevisionRecord{}
+		ds.History = ds.History[1:]
 	}
 
 	return ds.Rev, transformedOps, nil
@@ -101,7 +124,7 @@ func (ds *DocumentState) GetOpsSince(sinceRev int) ([]RevisionRecord, error) {
 		return nil, nil
 	}
 
-	if sinceRev > ds.Rev {
+	if sinceRev < 0 || sinceRev > ds.Rev {
 		return nil, fmt.Errorf("%w: requested rev %d > current rev %d", ErrRevisionMismatch, sinceRev, ds.Rev)
 	}
 

@@ -1,6 +1,9 @@
 package services
 
 import (
+	"context"
+	"encoding/json"
+	"github.com/logoes0/peeriodic.git/models"
 	"testing"
 
 	"github.com/logoes0/peeriodic.git/config"
@@ -20,7 +23,7 @@ func TestWebSocketServiceRoomManagement(t *testing.T) {
 		t.Fatal("expected WebSocketService instance, got nil")
 	}
 
-	room := ws.getOrCreateRoom("test-room", "Hello World", 0)
+	room := newRoomManager("test-room", "Hello World", 0)
 	if room == nil {
 		t.Fatal("expected room instance, got nil")
 	}
@@ -62,6 +65,7 @@ func TestWebSocketServiceRoomManagement(t *testing.T) {
 		t.Errorf("expected 0 clients initially, got %d", len(presence))
 	}
 
+	ws.rooms[room.ID] = room
 	// Test Room Stats
 	stats := ws.GetRoomStats()
 	if count, exists := stats["test-room"]; !exists || count != 0 {
@@ -72,7 +76,7 @@ func TestWebSocketServiceRoomManagement(t *testing.T) {
 func TestLegacyDocumentUpdate(t *testing.T) {
 	cfg := &config.Config{}
 	ws := NewWebSocketService(cfg, nil)
-	room := ws.getOrCreateRoom("legacy-room", "Initial", 0)
+	room := newRoomManager("legacy-room", "Initial", 0)
 
 	session := &ClientSession{
 		ClientID: "test-client",
@@ -81,7 +85,7 @@ func TestLegacyDocumentUpdate(t *testing.T) {
 	}
 
 	// Legacy update simulates full text replace
-	ws.handleLegacyDocumentUpdate(session, room, "Replaced Content", nil)
+	ws.handleLegacyDocumentUpdate(context.Background(), session, room, "Replaced Content", nil)
 
 	content, rev := room.DocState.GetSnapshot()
 	if content != "Replaced Content" {
@@ -95,7 +99,7 @@ func TestLegacyDocumentUpdate(t *testing.T) {
 func TestViewerCannotEdit(t *testing.T) {
 	cfg := &config.Config{}
 	ws := NewWebSocketService(cfg, nil)
-	room := ws.getOrCreateRoom("viewer-room", "Protected Document", 0)
+	room := newRoomManager("viewer-room", "Protected Document", 0)
 
 	viewerSession := &ClientSession{
 		ClientID: "viewer-client",
@@ -104,7 +108,7 @@ func TestViewerCannotEdit(t *testing.T) {
 	}
 
 	// Attempt to edit document as viewer
-	ws.handleLegacyDocumentUpdate(viewerSession, room, "Hacked Content", nil)
+	ws.handleLegacyDocumentUpdate(context.Background(), viewerSession, room, "Hacked Content", nil)
 
 	content, rev := room.DocState.GetSnapshot()
 	if content != "Protected Document" {
@@ -112,5 +116,19 @@ func TestViewerCannotEdit(t *testing.T) {
 	}
 	if rev != 0 {
 		t.Errorf("expected rev to stay 0, got %d", rev)
+	}
+}
+
+func TestEmptySnapshotWireFormat(t *testing.T) {
+	encoded, err := json.Marshal(models.Message{Type: models.MsgTypeInit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(encoded, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg["data"] != "" || msg["rev"] != float64(0) {
+		t.Fatalf("frontend cannot reset an empty document: %s", encoded)
 	}
 }

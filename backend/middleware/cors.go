@@ -22,11 +22,3 @@ func CORS(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
-
-// CORSWrapper wraps a handler with CORS headers
-func CORSWrapper(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		CORS(handler.ServeHTTP)(w, r)
-	})
-}
-

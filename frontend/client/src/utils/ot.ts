@@ -211,6 +211,9 @@ export function computeDiffAsOps(oldText: string, newText: string): Operation[] 
   return ops;
 }
 
+// Alias for computeDiffAsOps
+export const diffText = computeDiffAsOps;
+
 /**
  * Client-side OT State Machine (Jupiter / ShareDB model)
  */
@@ -313,5 +316,15 @@ export class ClientOTState {
     this.pending = null;
     this.buffer = null;
     return this.doc;
+  }
+
+  /**
+   * Returns total count of in-flight and buffered operations
+   */
+  getPendingCount(): number {
+    let count = 0;
+    if (this.pending) count += this.pending.length;
+    if (this.buffer) count += this.buffer.length;
+    return count;
   }
 }

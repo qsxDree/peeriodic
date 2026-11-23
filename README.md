@@ -1,208 +1,179 @@
-# Peeriodic - Real-Time Collaborative Text Editor
+# Peeriodic 📝
 
-A modern, real-time collaborative text editor built with Go (backend) and React/TypeScript (frontend). Multiple users can edit the same document simultaneously with live synchronization.
+**Peeriodic** is an enterprise-grade, real-time collaborative text editor built with a **Go** backend and **React/TypeScript** frontend. It provides Google Docs-style concurrent editing powered by **Operational Transformation (OT)**, live multi-user cursor tracking, per-document role-based access control (RBAC), and offline resilience.
 
-## 🚀 Features
+---
 
-- **Real-time collaboration**: Multiple users can edit simultaneously
-- **Room-based system**: Each document is a "room" with unique ID
-- **Live synchronization**: Changes appear instantly for all users
-- **Auto-save**: Documents are automatically saved every 30 seconds
-- **Shareable links**: Share room links with others to collaborate
-- **Modern UI**: Clean, responsive interface with smooth animations
-- **TypeScript**: Full type safety for better development experience
+## 🌟 Key Features
+
+- **Operational Transformation (OT) Engine**: Rune-safe atomic transformation function $T(a, b)$ ensuring deterministic convergence across concurrent edits without loss of intention.
+- **CodeMirror 6 Editor**: Rich markdown editor with syntax highlighting, line numbering, bracket matching, code folding, and collaborator cursor tags.
+- **Real-Time Presence & Cursors**: Live avatar pills, assigned collaborator colors, selection highlighting, and live cursor position broadcasting.
+- **Offline & Reconnection Resilience**: Unsaved local edits are queued in an in-memory client buffer (`ClientOTState`) when connectivity drops and automatically reconciled with the server upon reconnection.
+- **Role-Based Access Control (RBAC)**: Fine-grained permissions (`Owner`, `Editor`, `Viewer`) with one-click cryptographic invite links and member management.
+- **Document Dashboard**: Modern document browser with real-time title search, card grid previews, and creation modals.
+- **Backend Hardening**: Zero-dependency structured logging (`log/slog`), RFC 7807 problem details, token-bucket IP rate limiting, and multi-stage graceful shutdown.
+- **Automated Database Migrations**: Transaction-safe embedded SQL migrations (`backend/migrations/*.sql`) tracked via `schema_migrations`.
+- **Production-Ready Containerization**: Multi-stage Alpine Dockerfiles, Nginx reverse proxy, and `docker-compose.yml`.
+
+---
 
 ## 🏗️ Architecture
 
-### Backend (Go)
-- **Modular design**: Clean separation of concerns with services, handlers, and middleware
-- **WebSocket support**: Real-time communication using Gorilla WebSocket
-- **PostgreSQL**: Persistent storage for documents and room data
-- **Configuration management**: Environment-based configuration
-- **Graceful shutdown**: Proper server shutdown handling
-- **Error handling**: Comprehensive error handling and logging
+```mermaid
+flowchart TD
+    subgraph Clients["Clients (Browsers)"]
+        UserA["Client A (Alice)"]
+        UserB["Client B (Bob)"]
+        UserC["Client C (Viewer)"]
+    end
 
-### Frontend (React/TypeScript)
-- **Component-based**: Reusable, maintainable components
-- **Type safety**: Full TypeScript support for better development
-- **Service layer**: Centralized API and WebSocket services
-- **State management**: React hooks for local state
-- **Responsive design**: Mobile-friendly interface
-- **Modern styling**: CSS with smooth animations and transitions
+    subgraph Edge["Reverse Proxy & Gateway"]
+        Nginx["Nginx (Port 80/3000)\nReverse Proxy & SPA Router"]
+    end
 
-## 📁 Project Structure
+    subgraph Backend["Go Server (Port 5000)"]
+        Router["HTTP / WebSocket Router"]
+        Recoverer["Recovery & Error Handler\nRFC 7807"]
+        RateLimit["IP Token-Bucket Rate Limiter"]
+        AuthMW["Auth & Role Middleware\nJWT & Bcrypt"]
+        WSService["WebSocket Collaboration Service"]
+        OTEngine["Operational Transformation Engine\nMonotonic Revisions & History Buffer"]
+        DBService["Database Service Pool"]
+    end
 
+    subgraph Storage["Persistence"]
+        Postgres[("PostgreSQL 16\nRooms, Operations Log,\nUsers, Invites, Roles")]
+    end
+
+    UserA -->|REST & WS| Nginx
+    UserB -->|REST & WS| Nginx
+    UserC -->|REST & WS| Nginx
+
+    Nginx -->|/api/* & /healthz| Router
+    Nginx -->|/ws Connection Upgrade| WSService
+
+    Router --> Recoverer --> RateLimit --> AuthMW
+    WSService <--> OTEngine
+    WSService --> DBService
+    AuthMW --> DBService
+    DBService <--> Postgres
 ```
-peeriodic/
-├── backend/
-│   ├── config/          # Configuration management
-│   ├── handlers/        # HTTP request handlers
-│   ├── middleware/      # HTTP middleware (CORS, logging)
-│   ├── models/          # Data models
-│   ├── routers/         # Route definitions
-│   ├── services/        # Business logic services
-│   ├── utils/           # Utility functions
-│   └── main.go          # Application entry point
-├── frontend/
-│   └── client/
-│       ├── src/
-│       │   ├── components/  # React components
-│       │   ├── services/    # API and WebSocket services
-│       │   ├── types/       # TypeScript type definitions
-│       │   ├── utils/       # Utility functions
-│       │   └── App.tsx      # Main application component
-│       └── package.json
-└── README.md
-```
 
-## 🛠️ Setup Instructions
+---
 
-### Prerequisites
-- Go 1.24+ 
-- Node.js 18+
-- PostgreSQL 12+
-- Git
+## 🚀 Quickstart
 
-### Backend Setup
+### Option 1: Docker Compose (Recommended)
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd peeriodic
-   ```
-
-2. **Set up environment variables**
-   ```bash
-   cd backend
-   cp .env.example .env
-   # Edit .env with your database credentials
-   ```
-
-3. **Install dependencies**
-   ```bash
-   go mod tidy
-   ```
-
-4. **Set up database**
-   ```sql
-   CREATE DATABASE peeriodic;
-   CREATE TABLE rooms (
-     id VARCHAR(255) PRIMARY KEY,
-     title VARCHAR(255) NOT NULL,
-     content TEXT,
-     user_uid VARCHAR(255),
-     created_at TIMESTAMP DEFAULT NOW(),
-     updated_at TIMESTAMP DEFAULT NOW()
-   );
-   ```
-
-5. **Run the backend**
-   ```bash
-   go run main.go
-   ```
-
-### Frontend Setup
-
-1. **Install dependencies**
-   ```bash
-   cd frontend/client
-   npm install
-   ```
-
-2. **Start the development server**
-   ```bash
-   npm start
-   ```
-
-3. **Build for production**
-   ```bash
-   npm run build
-   ```
-
-### Using Makefile
+Start PostgreSQL, the Go backend server, and the Nginx frontend SPA together:
 
 ```bash
-# Start backend with live reload
-make run-be
+# Clone the repository
+git clone https://github.com/logoes0/peeriodic.git
+cd peeriodic
 
-# Start frontend
-make run-fe
+# Copy environment template
+cp .env.example .env
 
-# Tidy Go modules
-make mod
+# Build and start all services in the background
+docker-compose up --build -d
 ```
 
-## 🔧 Configuration
+- **Frontend App**: [http://localhost:3000](http://localhost:3000)
+- **Backend API**: [http://localhost:5000](http://localhost:5000)
+- **Liveness Probe**: [http://localhost:5000/healthz](http://localhost:5000/healthz)
+- **Readiness Probe**: [http://localhost:5000/readyz](http://localhost:5000/readyz)
+- **Runtime Metrics**: [http://localhost:5000/metrics](http://localhost:5000/metrics)
 
-### Backend Environment Variables
+---
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DB_USER` | Database username | Required |
-| `DB_PASSWORD` | Database password | "" |
-| `DB_NAME` | Database name | "peeriodic" |
-| `DB_HOST` | Database host | "localhost" |
-| `DB_PORT` | Database port | "5432" |
-| `DB_SSLMODE` | SSL mode | "disable" |
-| `PORT` | Server port | "5000" |
-| `HOST` | Server host | "localhost" |
+### Option 2: Local Development with Make
 
-### Frontend Environment Variables
+#### Prerequisites
+- **Go**: 1.22+
+- **Node.js**: 18+ (Node 20+ recommended)
+- **PostgreSQL**: 14+ running locally
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `REACT_APP_API_URL` | Backend API URL | "http://localhost:5000" |
+```bash
+# 1. Install dependencies
+make install
 
-## 🚀 Usage
+# 2. Configure environment
+cp .env.example .env
+# Ensure DB_USER, DB_PASSWORD, and DB_NAME match your local Postgres setup
 
-1. **Create a room**: Click "Create New Room" on the home page
-2. **Share the room**: Click the share button to copy the room link
-3. **Collaborate**: Multiple users can join via the shared link
-4. **Real-time editing**: See changes as others type
-5. **Auto-save**: Documents are saved automatically
+# 3. Start development servers
+make run
+```
+
+Or run services individually:
+```bash
+# Backend with live reload
+make run-be
+
+# Frontend React dev server
+make run-fe
+```
+
+---
 
 ## 🧪 Testing
 
-### Backend Tests
+Peeriodic includes unit tests, concurrency tests, and database integration tests.
+
 ```bash
-cd backend
-go test ./...
+# Run all backend and frontend test suites
+make test
+
+# Run backend tests only
+cd backend && TMPDIR=/tmp go test -v -race ./...
+
+# Run frontend tests only
+cd frontend/client && npm test -- --watchAll=false
 ```
 
-### Frontend Tests
-```bash
-cd frontend/client
-npm test
-```
+---
 
-## 📝 API Documentation
+## ⚙️ Configuration Reference
 
-### WebSocket Endpoints
+| Environment Variable | Description | Default |
+|---|---|---|
+| `HOST` | Server bind address | `localhost` |
+| `PORT` | Server listening port | `5000` |
+| `DB_HOST` | PostgreSQL host address | `localhost` |
+| `DB_PORT` | PostgreSQL port | `5432` |
+| `DB_USER` | PostgreSQL user | `postgres` |
+| `DB_PASSWORD` | PostgreSQL password | `postgres` |
+| `DB_NAME` | Database name | `peeriodic` |
+| `DB_SSLMODE` | PostgreSQL SSL connection mode | `disable` |
+| `JWT_SECRET` | Secret key for signing authentication tokens | *Configurable* |
+| `JWT_EXPIRY_HOURS` | Duration in hours before JWT token expires | `72` |
+| `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARN`, `ERROR`) | `INFO` |
+| `LOG_FORMAT` | Log layout: `text` (dev readable) or `json` (cloud/k8s) | `text` |
+| `AUTO_MIGRATE` | Automatically apply embedded SQL migrations on startup | `true` |
 
-- `GET /ws?room={roomId}` - Connect to a room for real-time collaboration
+---
 
-### HTTP Endpoints
+## 📡 Collaboration Protocol & API
 
-- `GET /api/rooms?uid={userId}` - Get user's rooms
-- `POST /api/rooms` - Create a new room
-- `GET /api/rooms/{id}` - Get room details
-- `DELETE /api/rooms/{id}` - Delete a room
-- `POST /api/save?room={roomId}` - Save document content
+- **Operational Transformation & WebSocket Specification**: See [`PROTOCOL.md`](./PROTOCOL.md).
+- **OpenAPI 3.1.0 Specification**: See [`docs/openapi.yaml`](./docs/openapi.yaml).
 
-## 🤝 Contributing
+### Summary of WebSocket Messages
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+| Message Type | Direction | Description |
+|---|---|---|
+| `init` | Server $\to$ Client | Initial document snapshot, assigned client ID, color, role, and collaborator presence list. |
+| `op` | Bidirectional | Atomic text operation (`insert` or `delete`) with base revision and client ID. |
+| `ack` | Server $\to$ Client | Acknowledgment of applied client operations with updated server revision. |
+| `cursor` | Bidirectional | Real-time cursor coordinates (`line`, `ch`, `pos`, `sel_start`, `sel_end`). |
+| `presence` | Server $\to$ Client | Active room collaborators list with connection timestamps and user profiles. |
+| `sync` | Bidirectional | Resynchronization request/response when client reconnects after network drop. |
+| `ping` / `pong` | Bidirectional | Heartbeat monitoring connection liveness every 25 seconds. |
+
+---
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- [Gorilla WebSocket](https://github.com/gorilla/websocket) for WebSocket support
-- [React](https://reactjs.org/) for the frontend framework
-- [TypeScript](https://www.typescriptlang.org/) for type safety
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

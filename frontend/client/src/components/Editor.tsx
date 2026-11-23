@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { WebSocketMessage, UserPresence, CursorPosition, Role } from '../types';
-import { ClientOTState, transformCursor } from '../utils/ot';
+import { WebSocketMessage } from '../types';
+import { ClientOTState } from '../utils/ot';
 import apiService from '../services/api';
-import wsService, { ConnectionStatus } from '../services/websocket';
+import wsService from '../services/websocket';
+import { useDocStore } from '../store/docStore';
+import CodeMirrorEditor from './CodeMirrorEditor';
+import OfflineBanner from './OfflineBanner';
 import ShareModal from './ShareModal';
 import './Editor.css';
 
@@ -14,25 +17,38 @@ interface EditorProps {
 }
 
 const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) => {
-  const [document, setDocument] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
-  const [presenceList, setPresenceList] = useState<UserPresence[]>([]);
-  const [myColor, setMyColor] = useState<string>('#007bff');
-  const [myName, setMyName] = useState<string>('');
-  const [currentUserRole, setCurrentUserRole] = useState<Role>('editor');
-  const [remoteCursors, setRemoteCursors] = useState<Record<string, { name: string; color: string; cursor: CursorPosition }>>({});
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  // Global Store State
+  const content = useDocStore((s) => s.content);
+  const rev = useDocStore((s) => s.rev);
+  const role = useDocStore((s) => s.role);
+  const isLoading = useDocStore((s) => s.isLoading);
+  const isSaving = useDocStore((s) => s.isSaving);
+  const connectionStatus = useDocStore((s) => s.connectionStatus);
+  const presences = useDocStore((s) => s.presences);
+  const myName = useDocStore((s) => s.myName);
+  const myColor = useDocStore((s) => s.myColor);
+  const myClientId = useDocStore((s) => s.myClientId);
 
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const initDocument = useDocStore((s) => s.initDocument);
+  const setContent = useDocStore((s) => s.setContent);
+  const setRole = useDocStore((s) => s.setRole);
+  const setIsLoading = useDocStore((s) => s.setIsLoading);
+  const setIsSaving = useDocStore((s) => s.setIsSaving);
+  const setConnectionStatus = useDocStore((s) => s.setConnectionStatus);
+  const setPendingOpsCount = useDocStore((s) => s.setPendingOpsCount);
+  const setMySession = useDocStore((s) => s.setMySession);
+  const setPresences = useDocStore((s) => s.setPresences);
+  const updateRemoteCursor = useDocStore((s) => s.updateRemoteCursor);
+  const removeRemoteCursor = useDocStore((s) => s.removeRemoteCursor);
+
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const otStateRef = useRef<ClientOTState>(new ClientOTState('', 0));
   const myClientIdRef = useRef<string>('');
   const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const isViewer = currentUserRole === 'viewer';
+  const isViewer = role === 'viewer';
 
-  // Load initial document content and role from REST
+  // 1. Fetch initial document content & user role from REST API
   useEffect(() => {
     let isCancelled = false;
 
@@ -41,15 +57,15 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
         setIsLoading(true);
         const response = await apiService.getDocument(roomId);
         if (isCancelled) return;
-        const content = response.content || '';
-        const rev = response.current_rev || 0;
-        if (response.role) {
-          setCurrentUserRole(response.role);
-        }
-        otStateRef.current = new ClientOTState(content, rev);
-        setDocument(content);
+
+        const docContent = response.content || '';
+        const docRev = response.current_rev || 0;
+        const userRole = response.role || 'editor';
+
+        otStateRef.current = new ClientOTState(docContent, docRev);
+        initDocument(roomId, roomName, docContent, docRev, userRole);
       } catch (error) {
-        console.error('Failed to load document:', error);
+        console.error('Failed to load document via API:', error);
       } finally {
         if (!isCancelled) setIsLoading(false);
       }
@@ -59,13 +75,13 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
     return () => {
       isCancelled = true;
     };
-  }, [roomId]);
+  }, [roomId, roomName, initDocument, setIsLoading]);
 
-  // Setup WebSocket connection and OT protocol handlers
+  // 2. Setup WebSocket connection and handle collaboration protocol
   useEffect(() => {
     let isActive = true;
 
-    // Track connection status
+    // Track real-time connection status
     wsService.onStatusChange((status) => {
       if (isActive) {
         setConnectionStatus(status);
@@ -75,37 +91,35 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
       }
     });
 
-    // Handle WebSocket messages
+    // Handle incoming WebSocket messages
     wsService.onMessage((message: WebSocketMessage) => {
       if (!isActive) return;
 
       switch (message.type) {
         case 'init':
           if (message.data !== undefined) {
-            const rev = message.rev || 0;
-            otStateRef.current = new ClientOTState(message.data, rev);
-            setDocument(message.data);
+            const serverRev = message.rev || 0;
+            otStateRef.current = new ClientOTState(message.data, serverRev);
+            setContent(message.data, serverRev);
           }
           if (message.client_id) {
             myClientIdRef.current = message.client_id;
           }
-          if (message.color) {
-            setMyColor(message.color);
-          }
-          if (message.name) {
-            setMyName(message.name);
+          if (message.name && message.color) {
+            setMySession(message.client_id || '', message.name, message.color, message.role);
           }
           if (message.role) {
-            setCurrentUserRole(message.role);
+            setRole(message.role);
           }
           if (message.presence) {
-            setPresenceList(message.presence);
+            setPresences(message.presence);
           }
           break;
 
         case 'ack':
           if (message.rev !== undefined) {
             const bufferedOpsToSend = otStateRef.current.handleServerAck(message.rev);
+            setPendingOpsCount(otStateRef.current.getPendingCount());
             if (bufferedOpsToSend && bufferedOpsToSend.length > 0) {
               wsService.sendOp(message.rev, bufferedOpsToSend);
             }
@@ -114,52 +128,30 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
 
         case 'op':
           if (message.client_id !== myClientIdRef.current && message.ops && message.rev !== undefined) {
-            const currentSelection = textareaRef.current
-              ? { start: textareaRef.current.selectionStart, end: textareaRef.current.selectionEnd }
-              : null;
-
-            const { newDoc, transformedRemoteOps } = otStateRef.current.handleServerOp(message.rev, message.ops);
-            setDocument(newDoc);
-
-            if (currentSelection && textareaRef.current) {
-              let newStart = currentSelection.start;
-              let newEnd = currentSelection.end;
-              for (const op of transformedRemoteOps) {
-                newStart = transformCursor(newStart, op);
-                newEnd = transformCursor(newEnd, op);
-              }
-              requestAnimationFrame(() => {
-                if (textareaRef.current) {
-                  textareaRef.current.setSelectionRange(newStart, newEnd);
-                }
-              });
-            }
+            const { newDoc } = otStateRef.current.handleServerOp(message.rev, message.ops);
+            setContent(newDoc, message.rev);
           }
           break;
 
         case 'cursor':
           if (message.client_id && message.client_id !== myClientIdRef.current && message.cursor) {
-            setRemoteCursors(prev => ({
-              ...prev,
-              [message.client_id!]: {
-                name: message.name || 'User',
-                color: message.color || '#e06c75',
-                cursor: message.cursor!,
-              },
-            }));
+            updateRemoteCursor(
+              message.client_id,
+              message.name || 'User',
+              message.color || '#e06c75',
+              message.cursor
+            );
           }
           break;
 
         case 'presence':
           if (message.presence) {
-            setPresenceList(message.presence);
-            const activeIds = new Set(message.presence.map(p => p.client_id));
-            setRemoteCursors(prev => {
-              const updated = { ...prev };
-              Object.keys(updated).forEach(id => {
-                if (!activeIds.has(id)) delete updated[id];
-              });
-              return updated;
+            setPresences(message.presence);
+            const activeIds = new Set(message.presence.map((p) => p.client_id));
+            useDocStore.getState().presences.forEach((p) => {
+              if (!activeIds.has(p.client_id)) {
+                removeRemoteCursor(p.client_id);
+              }
             });
           }
           break;
@@ -167,12 +159,13 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
         case 'sync':
           if (message.rev !== undefined) {
             const resyncedDoc = otStateRef.current.handleSync(message.rev, message.data, message.ops);
-            setDocument(resyncedDoc);
+            setContent(resyncedDoc, message.rev);
+            setPendingOpsCount(0);
           }
           break;
 
         case 'error':
-          console.warn('WebSocket error received from server:', message.data);
+          console.warn('Real-time collaboration error:', message.data);
           break;
 
         default:
@@ -180,7 +173,7 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
       }
     });
 
-    wsService.connect(roomId).catch(err => {
+    wsService.connect(roomId).catch((err) => {
       console.error('WebSocket connection failure:', err);
     });
 
@@ -189,24 +182,26 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
       wsService.clearHandlers();
       wsService.disconnect();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
+  // 3. Document Saving
   const handleSave = useCallback(async () => {
-    if (!document.trim() || isViewer) return;
+    if (!content.trim() || isViewer) return;
 
     try {
       setIsSaving(true);
-      await apiService.saveDocument(roomId, document);
+      await apiService.saveDocument(roomId, content);
     } catch (error) {
       console.error('Failed to save document:', error);
     } finally {
       setIsSaving(false);
     }
-  }, [document, roomId, isViewer]);
+  }, [content, roomId, isViewer, setIsSaving]);
 
-  // Periodic Auto-save (only if user has write permissions)
+  // 4. Periodic Auto-save (every 30 seconds if user has write access)
   useEffect(() => {
-    if (document.trim() && !isViewer) {
+    if (content.trim() && !isViewer) {
       autoSaveIntervalRef.current = setInterval(() => {
         handleSave();
       }, 30000);
@@ -217,40 +212,22 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
         clearInterval(autoSaveIntervalRef.current);
       }
     };
-  }, [document, handleSave, isViewer]);
+  }, [content, handleSave, isViewer]);
 
-  // Handle local text edit with OT
-  const handleDocumentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    if (isViewer) return;
+  // 5. Handle local edit from CodeMirror
+  const handleLocalChange = useCallback(
+    (newContent: string) => {
+      if (isViewer) return;
 
-    const newContent = e.target.value;
-    setDocument(newContent);
+      const opsToSend = otStateRef.current.applyLocalEdit(newContent);
+      setPendingOpsCount(otStateRef.current.getPendingCount());
 
-    const opsToSend = otStateRef.current.applyLocalEdit(newContent);
-    if (opsToSend && opsToSend.length > 0 && wsService.isConnected()) {
-      wsService.sendOp(otStateRef.current.rev, opsToSend);
-    }
-  }, [isViewer]);
-
-  // Broadcast cursor and selection changes
-  const handleCursorMove = useCallback(() => {
-    if (!textareaRef.current || !wsService.isConnected()) return;
-
-    const pos = textareaRef.current.selectionStart;
-    const selStart = textareaRef.current.selectionStart;
-    const selEnd = textareaRef.current.selectionEnd;
-
-    wsService.sendCursor({
-      pos,
-      sel_start: selStart,
-      sel_end: selEnd,
-    });
-  }, []);
-
-  const handleShareClick = () => {
-    setIsShareModalOpen(true);
-    onShare();
-  };
+      if (opsToSend && opsToSend.length > 0 && wsService.isConnected()) {
+        wsService.sendOp(otStateRef.current.rev, opsToSend);
+      }
+    },
+    [isViewer, setPendingOpsCount]
+  );
 
   const getStatusBadge = () => {
     switch (connectionStatus) {
@@ -266,18 +243,21 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
     }
   };
 
-  const peerCount = presenceList.length > 0 ? presenceList.length : 1;
+  const peerCount = presences.length > 0 ? presences.length : 1;
+  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+  const charCount = Array.from(content).length;
 
   return (
     <div className="editor">
+      {/* Editor Top Navigation Header */}
       <header className="editor-header">
         <div className="editor-title">
           <h2>{roomName}</h2>
           {getStatusBadge()}
-          <span className={`role-badge role-${currentUserRole}`}>
-            {currentUserRole === 'owner' ? '👑 Owner' : currentUserRole === 'editor' ? '✏️ Editor' : '👁️ Viewer'}
+          <span className={`role-badge role-${role}`}>
+            {role === 'owner' ? '👑 Owner' : role === 'editor' ? '✏️ Editor' : '👁️ Viewer'}
           </span>
-          <span className="rev-badge">rev {otStateRef.current.rev}</span>
+          <span className="rev-badge">v{rev}</span>
           {myName && (
             <span className="user-name-badge" style={{ borderColor: myColor, color: myColor }}>
               {myName}
@@ -285,11 +265,11 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
           )}
         </div>
 
-        {/* Live Presence Avatars */}
+        {/* Live Collaborator Presence Avatars */}
         <div className="presence-bar">
           <div className="presence-avatars">
-            {presenceList.map((user) => {
-              const isMe = user.client_id === myClientIdRef.current;
+            {presences.map((user) => {
+              const isMe = user.client_id === myClientId;
               return (
                 <div
                   key={user.client_id}
@@ -297,7 +277,7 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
                   style={{ backgroundColor: user.color }}
                   title={`${user.name}${user.role ? ` (${user.role})` : ''}${isMe ? ' (You)' : ''}`}
                 >
-                  {user.name.charAt(0).toUpperCase()}
+                  {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
                 </div>
               );
             })}
@@ -307,12 +287,19 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
           </span>
         </div>
 
+        {/* Header Actions */}
         <div className="editor-actions">
           <button onClick={onBack} className="btn btn-back">
-            ⬅ Back
+            ⬅ Dashboard
           </button>
-          <button onClick={handleShareClick} className="btn btn-share">
-            🔗 Share
+          <button
+            onClick={() => {
+              setIsShareModalOpen(true);
+              onShare();
+            }}
+            className="btn btn-share"
+          >
+            👥 Share
           </button>
           <button
             onClick={handleSave}
@@ -325,57 +312,50 @@ const Editor: React.FC<EditorProps> = ({ roomId, roomName, onBack, onShare }) =>
         </div>
       </header>
 
+      {/* Offline & Reconnection Notifications */}
+      <OfflineBanner />
+
+      {/* Viewer Read-Only Banner */}
       {isViewer && (
         <div className="viewer-notice-banner">
-          👁️ <strong>Read-Only Mode:</strong> You have viewer access to this document. Contact the owner to request editor permissions.
+          👁️ <strong>Read-Only Mode:</strong> You have viewer permissions for this document. Contact the owner to request editing access.
         </div>
       )}
 
+      {/* Editor Body */}
       <main className="editor-main">
         {isLoading ? (
           <div className="loading-indicator">
             <div className="spinner"></div>
-            <p>Loading document...</p>
+            <p>Loading document content...</p>
           </div>
         ) : (
-          <div className="editor-container">
-            <textarea
-              ref={textareaRef}
-              value={document}
-              onChange={handleDocumentChange}
-              onKeyUp={handleCursorMove}
-              onClick={handleCursorMove}
-              onSelect={handleCursorMove}
+          <div className="editor-workspace">
+            <CodeMirrorEditor
+              onDocChange={handleLocalChange}
               readOnly={isViewer}
-              placeholder={isViewer ? "This document is read-only..." : "Start typing collaboratively in real-time..."}
-              className={`document-editor ${isViewer ? 'read-only' : ''}`}
-              rows={24}
-              cols={80}
             />
 
-            {/* Remote Cursors and Presence Info Footer */}
-            <div className="remote-cursors-info">
-              {Object.entries(remoteCursors).map(([id, info]) => (
-                <span
-                  key={id}
-                  className="remote-cursor-pill"
-                  style={{ borderLeftColor: info.color }}
-                >
-                  <span className="cursor-dot" style={{ backgroundColor: info.color }}></span>
-                  {info.name} at line {document.substring(0, info.cursor.pos).split('\n').length}
-                </span>
-              ))}
-            </div>
+            {/* Editor Footer Status Bar */}
+            <footer className="editor-status-bar">
+              <span className="status-item">Markdown Enabled</span>
+              <span className="status-divider">•</span>
+              <span className="status-item">{wordCount} words</span>
+              <span className="status-divider">•</span>
+              <span className="status-item">{charCount} characters</span>
+              <span className="status-divider">•</span>
+              <span className="status-item">Revision {rev}</span>
+            </footer>
           </div>
         )}
       </main>
 
-      {/* Share & Invite Management Modal */}
+      {/* Share & Role Management Modal */}
       <ShareModal
         isOpen={isShareModalOpen}
         roomId={roomId}
         roomName={roomName}
-        currentUserRole={currentUserRole}
+        currentUserRole={role}
         onClose={() => setIsShareModalOpen(false)}
       />
     </div>

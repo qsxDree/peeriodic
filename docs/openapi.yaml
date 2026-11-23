@@ -1,0 +1,374 @@
+openapi: 3.1.0
+info:
+  title: Peeriodic Collaboration API
+  version: 1.0.0
+  description: |
+    REST and WebSocket API for Peeriodic — a real-time collaborative text editor
+    powered by Operational Transformation (OT) and role-based access control.
+servers:
+  - url: http://localhost:5000
+    description: Local development server
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: Returns liveness status and uptime.
+      responses:
+        '200':
+          description: Server is healthy and running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  uptime_seconds:
+                    type: number
+                    example: 3600.5
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      description: Checks database connectivity and readiness to serve traffic.
+      responses:
+        '200':
+          description: Database is connected and ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  database:
+                    type: string
+                    example: connected
+        '503':
+          description: Database connection is unavailable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: unavailable
+                  database:
+                    type: string
+                    example: disconnected
+                  error:
+                    type: string
+
+  /api/auth/register:
+    post:
+      summary: Register a new user
+      description: Creates a user account with hashed password and returns a JWT token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  minLength: 6
+                  example: supersecret123
+                name:
+                  type: string
+                  example: Alice Doe
+      responses:
+        '200':
+          description: Registration successful. Returns JWT token and user profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/login:
+    post:
+      summary: User login
+      description: Authenticates user credentials and returns a JWT session token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/me:
+    get:
+      summary: Current authenticated user profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/rooms:
+    get:
+      summary: List accessible rooms
+      description: Returns rooms owned by or shared with the authenticated user.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of rooms.
+    post:
+      summary: Create a new room
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: Project Notes
+                content:
+                  type: string
+                  example: Initial document text
+      responses:
+        '200':
+          description: Room created.
+
+  /api/rooms/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get room details and content
+      responses:
+        '200':
+          description: Room details.
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete room (Owner only)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Room deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/rooms/{id}/invites:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Create invite link
+      description: Generates a sharable invite link with specified role (Owner only).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [editor, viewer]
+      responses:
+        '200':
+          description: Invite created.
+
+  /api/rooms/{id}/members:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: List room members
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Member list with assigned roles.
+
+  /api/invites/{token}/accept:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Accept invite token
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Invite accepted.
+
+  /ws:
+    get:
+      summary: WebSocket real-time collaboration endpoint
+      description: |
+        Upgrades HTTP connection to WebSocket protocol.
+        Expects query parameters:
+        - `room`: Document room ID
+        - `token`: Optional JWT token for authentication
+        - `uid`: Optional guest identifier
+        - `name`: Optional display name
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        uid:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            token:
+              type: string
+            user:
+              $ref: '#/components/schemas/User'
+
+    ProblemDetails:
+      type: object
+      properties:
+        type:
+          type: string
+          example: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters or payload.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Authentication required or invalid token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Forbidden:
+      description: Insufficient permissions for resource.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Number of seconds to wait before retrying.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'

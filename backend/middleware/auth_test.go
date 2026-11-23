@@ -84,3 +84,17 @@ func TestAuthMiddleware(t *testing.T) {
 		t.Errorf("expected empty UID for anonymous user, got %s", capturedUID)
 	}
 }
+
+func TestOptionalAuthRejectsInvalidCredentials(t *testing.T) {
+	auth := services.NewAuthService(&config.Config{Auth: config.AuthConfig{JWTSecret: "test", TokenExpiryHours: 1}})
+	handler := OptionalAuth(auth)(func(http.ResponseWriter, *http.Request) { t.Fatal("invalid credentials became anonymous") })
+	for _, header := range []string{"Bearer broken", "Basic abc", "Bearer"} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", header)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("header=%s status=%d", header, rec.Code)
+		}
+	}
+}

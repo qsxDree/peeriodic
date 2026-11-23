@@ -15,11 +15,27 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_uid ON users(uid);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
--- Update rooms table to reference users
--- First, add the foreign key constraint
-ALTER TABLE rooms 
-ADD CONSTRAINT fk_rooms_user_uid 
-FOREIGN KEY (user_uid) REFERENCES users(uid) ON DELETE SET NULL;
+-- Create rooms table if it does not exist yet
+CREATE TABLE IF NOT EXISTS rooms (
+    id VARCHAR(255) PRIMARY KEY,
+    title VARCHAR(255) NOT NULL DEFAULT 'Untitled Room',
+    content TEXT DEFAULT '',
+    user_uid VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Update rooms table to reference users with a foreign key constraint safely
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_rooms_user_uid'
+    ) THEN
+        ALTER TABLE rooms 
+        ADD CONSTRAINT fk_rooms_user_uid 
+        FOREIGN KEY (user_uid) REFERENCES users(uid) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- Update existing rooms to handle NULL user_uid values
 UPDATE rooms SET user_uid = NULL WHERE user_uid = '';

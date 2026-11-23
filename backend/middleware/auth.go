@@ -21,10 +21,11 @@ const (
 func ExtractToken(r *http.Request) string {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {
-		parts := strings.SplitN(authHeader, " ", 2)
+		parts := strings.Fields(authHeader)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			return strings.TrimSpace(parts[1])
 		}
+		return authHeader
 	}
 
 	// Fallback to query parameter (common for WebSocket connections)
@@ -78,11 +79,7 @@ func RequireAuth(authService *services.AuthService) func(http.HandlerFunc) http.
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), UserUIDKey, claims.UID)
-			ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
-			ctx = context.WithValue(ctx, UserNameKey, claims.Name)
-
-			next(w, r.WithContext(ctx))
+			next(w, r.WithContext(WithUserClaims(r.Context(), claims.UID, claims.Email, claims.Name)))
 		}
 	}
 }
@@ -93,13 +90,12 @@ func OptionalAuth(authService *services.AuthService) func(http.HandlerFunc) http
 		return func(w http.ResponseWriter, r *http.Request) {
 			tokenString := ExtractToken(r)
 			if tokenString != "" {
-				if claims, err := authService.ValidateToken(tokenString); err == nil {
-					ctx := context.WithValue(r.Context(), UserUIDKey, claims.UID)
-					ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
-					ctx = context.WithValue(ctx, UserNameKey, claims.Name)
-					next(w, r.WithContext(ctx))
+				claims, err := authService.ValidateToken(tokenString)
+				if err != nil {
+					utils.Unauthorized(w, "Invalid or expired token")
 					return
 				}
+				r = r.WithContext(WithUserClaims(r.Context(), claims.UID, claims.Email, claims.Name))
 			}
 
 			next(w, r)
